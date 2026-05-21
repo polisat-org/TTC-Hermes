@@ -1,0 +1,63 @@
+int a,b,c;
+int delta;
+
+void setup() {
+  
+  Serial.begin(9600);
+
+}
+
+void loop() {
+  if(Serial.available()) {
+    a = Serial.parseInt();
+    b = Serial.parseInt();
+    c = Serial.parseInt();
+    // ax²+bx+c=0
+
+    if(a==0) {
+      Serial.println("Não é equação de Segundo Grau.");
+      return;
+    }
+
+    Serial.print("Equação => ");
+    if(a==-1)
+      Serial.print("-");
+    else if(a!=1)
+      Serial.print(a);
+    Serial.print("x²");
+    if(b!=0){
+      if(b==-1)
+        Serial.print("-");
+      if(b>0)
+        Serial.print("+");  
+      if(b!=1 && b!=-1)
+        Serial.print(b);
+      Serial.print("x");
+    }
+    if(c!=0) {
+      if(c>0)
+        Serial.print("+");
+      Serial.print(c);
+    }
+    Serial.println("=0");
+
+  delta = b*b - 4*a*c;
+    
+    if(delta==0) {
+      Serial.print("Solução única = ");
+      Serial.println(-b/(2*a));
+    }
+
+    if(delta<0) {
+      Serial.println("Não há solução real.");
+    }
+
+    if(delta>0) {
+      Serial.print("Primeira Solução = ");
+      Serial.println((-b+sqrt(delta))/(2*a));
+      Serial.print("Segunda Solução = ");
+      Serial.println((-b-sqrt(delta))/(2*a));
+    }
+
+  }
+}
