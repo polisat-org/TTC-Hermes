@@ -1,0 +1,61 @@
+// Código do ESP32 A
+
+#define RXp2 16
+#define TXp2 17
+
+unsigned long tempo = 0;
+
+void setup() {
+  Serial.begin(115200);
+  
+  // Inicializa a Serial2 para a comunicação com o outro ESP32
+  Serial2.begin(9600, SERIAL_8N1, RXp2, TXp2);
+  Serial.println("Transmissor ligado");
+}
+
+void loop() {
+
+  String mensagem = "Tudo certo por aqui";
+  // Envia uma mensagem a cada 2 segundos
+  if(millis() - tempo > 2000){
+    Serial2.println(mensagem);
+    tempo = millis();
+  }
+
+  // Verifica se há dados disponíveis para leitura na Serial2
+  if(Serial2.available()){
+    // Lê a string até encontrar uma quebra de linha (\n)
+    String Recebido = Serial2.readStringUntil('\n');
+
+    Serial.print("Recebido do ESP32 B: ");
+    Serial.println(Recebido);
+  }
+  
+}
+
+
+
+// Código do ESP32 B
+
+#define RXp2 16
+#define TXp2 17
+
+void setup() {
+  Serial.begin(115200);
+
+  Serial2.begin(9600, SERIAL_8N1, RXp2, TXp2);
+  Serial.println("Receptor ligado");
+}
+
+void loop() {
+
+  if (Serial2.available()) {
+
+    String dadosRecebidos = Serial2.readStringUntil('\n');
+    
+    Serial.print("Recebido do ESP32 A: ");
+    Serial.println(Recebido);
+
+    Serial2.println("Tudo certo"); // Dá um retorno para o ESP32 A 
+  }
+}
