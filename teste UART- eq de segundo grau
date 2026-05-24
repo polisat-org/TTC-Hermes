@@ -1,62 +1,98 @@
+#define RXD2 16
+#define TXD2 17
+#define RXD1 25
+#define TXD1 26
+
+String dados;
+
 int a,b,c;
 int delta;
 
+//ESP32-A
+
 void setup() {
-  
-  Serial.begin(9600);
+
+Serial1.begin(9600, SERIAL_8N1, RXD1, TXD1);
+Serial.println("Digite: a b c");
 
 }
 
 void loop() {
-  if(Serial.available()) {
-    a = Serial.parseInt();
-    b = Serial.parseInt();
-    c = Serial.parseInt();
+
+if(Serial.available()) {
+  dados = Serial.readStringUntil('\n');
+
+  Serial1.println(dados);
+
+}
+
+if(Serial1.available()) {
+
+  String resposta = Serial1.readString();
+  Serial.println(resposta);
+
+}
+
+
+
+// ESP32-B
+
+void setup() {
+  
+  Serial2.begin(9600, SERIAL_8N1, RXD2, TXD2);
+
+}
+
+void loop() {
+  if(Serial2.available()) {
+    a = Serial2.parseInt();
+    b = Serial2.parseInt();
+    c = Serial2.parseInt();
     // ax²+bx+c=0
 
     if(a==0) {
-      Serial.println("Não é equação de Segundo Grau.");
+      Serial2.println("Não é equação de Segundo Grau.");
       return;
     }
 
-    Serial.print("Equação => ");
+    Serial2.print("Equação => ");
     if(a==-1)
-      Serial.print("-");
+      Serial2.print("-");
     else if(a!=1)
-      Serial.print(a);
-    Serial.print("x²");
+      Serial2.print(a);
+    Serial2.print("x²");
     if(b!=0){
       if(b==-1)
-        Serial.print("-");
+        Serial2.print("-");
       if(b>0)
-        Serial.print("+");  
+        Serial2.print("+");  
       if(b!=1 && b!=-1)
-        Serial.print(b);
-      Serial.print("x");
+        Serial2.print(b);
+      Serial2.print("x");
     }
     if(c!=0) {
       if(c>0)
-        Serial.print("+");
-      Serial.print(c);
+        Serial2.print("+");
+      Serial2.print(c);
     }
-    Serial.println("=0");
+    Serial2.println("=0");
 
   delta = b*b - 4*a*c;
     
     if(delta==0) {
-      Serial.print("Solução única = ");
-      Serial.println(-b/(2*a));
+      Serial2.print("Solução única = ");
+      Serial2.println(-b/(2*a));
     }
 
     if(delta<0) {
-      Serial.println("Não há solução real.");
+      Serial2.println("Não há solução real.");
     }
 
     if(delta>0) {
-      Serial.print("Primeira Solução = ");
-      Serial.println((-b+sqrt(delta))/(2*a));
-      Serial.print("Segunda Solução = ");
-      Serial.println((-b-sqrt(delta))/(2*a));
+      Serial2.print("Primeira Solução = ");
+      Serial2.println((-b+sqrt(delta))/(2*a));
+      Serial2.print("Segunda Solução = ");
+      Serial2.println((-b-sqrt(delta))/(2*a));
     }
 
   }
