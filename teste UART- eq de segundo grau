@@ -1,7 +1,6 @@
-#define RXD2 16
-#define TXD2 17
 #define RXD1 25
 #define TXD1 26
+#define LED 2
 
 String dados;
 
@@ -12,34 +11,46 @@ int delta;
 
 void setup() {
 
-Serial1.begin(9600, SERIAL_8N1, RXD1, TXD1);
-Serial.println("Digite: a b c");
+  Serial.begin(115200);
+  Serial1.begin(9600, SERIAL_8N1, RXD1, TXD1);
+  pinMode(LED, OUTPUT);
+  Serial.println("Digite: a b c");
 
 }
 
 void loop() {
 
-if(Serial.available()) {
-  dados = Serial.readStringUntil('\n');
+  if(Serial.available()) {
+  
+    dados = Serial.readStringUntil('\n');
+    Serial1.println(dados);
 
-  Serial1.println(dados);
+  }
+
+  if(Serial1.available()) {
+
+    String resposta = Serial1.readStringUntil('\n');
+    Serial.println(resposta);
+
+      digitalWrite(LED, HIGH);
+      delay(500);
+      digitalWrite(LED, LOW);
+
+  }
 
 }
-
-if(Serial1.available()) {
-
-  String resposta = Serial1.readString();
-  Serial.println(resposta);
-
-}
-
-
 
 // ESP32-B
 
+#define RXD2 16
+#define TXD2 17
+#define LED 2
+
 void setup() {
   
+  Serial.begin(11520);
   Serial2.begin(9600, SERIAL_8N1, RXD2, TXD2);
+  pinMode(LED, OUTPUT);
 
 }
 
@@ -49,6 +60,10 @@ void loop() {
     b = Serial2.parseInt();
     c = Serial2.parseInt();
     // ax²+bx+c=0
+
+    digitalWrite(LED, HIGH);
+    delay(300);
+    digitalWrite(LED, LOW);
 
     if(a==0) {
       Serial2.println("Não é equação de Segundo Grau.");
