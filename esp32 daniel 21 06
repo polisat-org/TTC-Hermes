@@ -1,0 +1,65 @@
+#include <Arduino.h>
+#include <HardwareSerial.h>
+// Código do ESP32 A
+
+#define RXp2 16
+#define TXp2 17
+// O UART2 é a melhor porta
+HardwareSerial DSerial(2);
+
+int num = 0;
+float dec = 0.0;
+String tex = "base";
+
+void setup() {
+  // Inicia a comunicação serial com a taxa de 115200 bauds (padrão comum do ESP32)
+  DSerial.begin(115200, SERIAL_8N1, RXp2, TXp2);
+}
+
+void loop() {
+  if (Serial.available() > 0) {
+    num = Serial.parseInt();
+    dec = Serial.parseFloat();
+    tex = Serial.readStringUntil('\n'); // Lê a string até quebra de linha
+
+    // Remove espaços em branco da string
+    tex.trim(); 
+
+    DSerial.println(num);
+    DSerial.println(dec);
+    DSerial.println(tex);
+  }
+}
+
+
+// Código do ESP32 B
+
+#define RXp2 16
+#define TXp2 17
+#define Led 15
+
+HardwareSerial DSerial(2);
+
+int numRec = 0;
+float decRec = 0.0;
+String texRec = "";
+
+void setup() {
+  DSerial.begin(115200, SERIAL_8N1, RXp2, TXp2);
+  // garantir que o led esteja desligado
+  digitalWrite(Led, LOW);
+}
+
+void loop() {
+  if (Serial.available() > 0) {
+    numRec = DSerial.parseInt();
+    decRec = DSerial.parseFloat();
+    texRec = DSerial.readStringUntil('\n');
+
+    texRec.trim();
+  }
+  // Arbitrário
+  if((numRec > 3 && decRec < 3.5) || texRec == "Sucesso"){
+    digitalWrite(Led, HIGH);
+  }
+}
