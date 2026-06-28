@@ -1,0 +1,39 @@
+#define RX2 16
+#define TX2 17
+#define redled 2
+#define greenled 4
+String texto = ""; 
+
+void setup() {
+  Serial.begin(115200);
+  Serial2.begin(115200, SERIAL_8N1, RX2, TX2);
+  pinMode(redled, OUTPUT);   
+  pinMode(greenled, OUTPUT); 
+}
+
+void loop() {
+  digitalWrite(greenled, LOW);
+  digitalWrite(redled, LOW);
+  if (Serial2.available() > 0) {
+    texto = Serial2.readString();
+    texto.trim();
+    Serial.print("Mensagem recebida: ");
+    Serial.print(texto);
+
+    if (texto == "ligaled") {
+      Serial.println("Comunicação bem sucedida");
+      digitalWrite(greenled, HIGH);
+      digitalWrite(redled, LOW);
+      delay(5000);
+    } 
+    else {
+      Serial.println("Comunicação mal sucedida");
+      digitalWrite(greenled, LOW);
+      digitalWrite(redled, HIGH);
+      delay(5000);
+    }
+    texto = "";
+    digitalWrite(greenled, LOW);
+    digitalWrite(redled, LOW);
+  }
+}
