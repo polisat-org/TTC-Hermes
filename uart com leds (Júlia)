@@ -1,3 +1,16 @@
+//CÓDIGO DO TRANSMISSOR
+#define RX2 16
+#define TX2 17
+
+void setup() {
+  Serial2.begin(115200, SERIAL_8N1, RX2, TX2);
+}
+
+void loop() {
+  Serial2.print("ligaled"); 
+  delay(7000);
+
+//CÓDIGO DO RECEPTOR
 #define RX2 16
 #define TX2 17
 #define redled 2
