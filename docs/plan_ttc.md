@@ -34,20 +34,18 @@ PC USB <-> ESP32 Ground <-> E32 <-> enlace LoRa
 ## 3. Estrutura de arquivos
 
 ```text
-hermes_ttc/
-├── plan_ttc.md
-├── detalhamento_ttc.md
-├── common/
-│   ├── crc16.h
-│   ├── protocol.h
-│   ├── telemetry.h
-│   ├── e32.h
-│   ├── rdt3.h
-│   └── uart_rx.h
-├── cubesat_ttc/
-│   └── cubesat_ttc.ino
-└── ground_ttc/
-    └── ground_ttc.ino
+TTC-Hermes/
+├── docs/
+│   ├── plan_ttc.md
+│   ├── detalhamento_ttc.md
+│   └── analise_ttc.md
+├── firmware/
+│   ├── common/          crc16.h, protocol.h, telemetry.h, e32.h, rdt3.h, uart_rx.h
+│   ├── cubesat_ttc/     cubesat_ttc.ino
+│   ├── ground_ttc/      ground_ttc.ino
+│   ├── wired_ground/    wired_ground.ino  (solo cabeado, sem rádio)
+│   └── mock_obc/        mock_obc.ino      (NUCLEO-L476RG, dados simulados)
+└── ground_ui/           bridge Node + interface React
 ```
 
 ## 4. Interfaces

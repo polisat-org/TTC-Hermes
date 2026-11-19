@@ -507,8 +507,8 @@ TTC_BUSY alto ---------------+
 ## 15. Compilação
 
 ```bash
-arduino-cli compile --fqbn esp32:esp32:esp32 cubesat_ttc
-arduino-cli compile --fqbn esp32:esp32:esp32 ground_ttc
+arduino-cli compile --fqbn esp32:esp32:esp32 firmware/cubesat_ttc
+arduino-cli compile --fqbn esp32:esp32:esp32 firmware/ground_ttc
 ```
 
 ## 16. Testes

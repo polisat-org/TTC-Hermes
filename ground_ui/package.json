@@ -1,0 +1,32 @@
+{
+  "name": "hermes-ground-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Ground station UI for Hermes TT&C: serial<->WebSocket bridge + React dashboard",
+  "scripts": {
+    "bridge": "node bridge/server.mjs",
+    "sim": "node bridge/server.mjs --sim",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "node --test bridge/protocol.test.mjs"
+  },
+  "dependencies": {
+    "leaflet": "1.9.4",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-leaflet": "4.2.1",
+    "recharts": "2.12.7",
+    "serialport": "12.0.0",
+    "ws": "8.18.0"
+  },
+  "devDependencies": {
+    "@types/leaflet": "1.9.12",
+    "@types/react": "18.3.11",
+    "@types/react-dom": "18.3.1",
+    "@vitejs/plugin-react": "4.3.2",
+    "typescript": "5.6.3",
+    "vite": "5.4.10"
+  }
+}
