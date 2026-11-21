@@ -6,6 +6,7 @@
 #include "../common/telemetry.h"
 #include "../common/e32.h"
 #include "../common/rdt3.h"
+#include "../common/obc_frames.h"
 
 #define E32_RX_PIN 16
 #define E32_TX_PIN 17
@@ -17,7 +18,12 @@
 
 #define STATUS_LED_PIN 13
 #define LED_HOLD_MS 50
-#define TX_GUARD_MS 1000
+// Espera um pouco de silêncio no rádio antes de mandar um TC (dá tempo do ACK do outro lado), mas
+// não para sempre: com o pointing ligado o satélite manda azimute a cada 1 s e um silêncio de 1 s
+// nunca acontecia, então o solo não conseguia mandar TC nenhum. Depois de TX_GUARD_MAX_WAIT_MS o TC
+// sai mesmo assim (o RDT3 trata DATA dos dois lados ao mesmo tempo).
+#define TX_GUARD_MS 150
+#define TX_GUARD_MAX_WAIT_MS 2000
 #define COMMAND_QUEUE_SIZE 4
 
 HardwareSerial LoraSerial(2);
@@ -30,6 +36,7 @@ uint8_t queueHead = 0;
 uint8_t queueTail = 0;
 uint8_t queueCount = 0;
 uint32_t lastRadioActivity = 0;
+uint32_t queueWaitSince = 0;   // desde quando há TC esperando o rádio
 uint32_t ledUntil = 0;
 
 uint8_t makeSession() {
@@ -62,20 +69,10 @@ void sendStatus(uint8_t command, uint8_t status) {
   Serial.write(response, sizeof(response));
 }
 
+// Repassa ao PC só quadros do OBC íntegros ('T', 'P', 'H', 'Z'; ver common/telemetry.h).
 void sendToPc(const uint8_t *data, size_t length) {
-  if (length == 0) {
-    return;
-  }
-  if (data[0] == TELEMETRY_ID && length == TELEMETRY_FRAME_SIZE) {
+  if (obcFrameValid(data, length)) {
     Serial.write(data, length);
-    return;
-  }
-  if (data[0] == PAYLOAD_ID && length >= PAYLOAD_HEADER_SIZE) {
-    uint8_t count = data[1];
-    if (count <= MAX_PLANES &&
-        length == PAYLOAD_HEADER_SIZE + static_cast<size_t>(count) * sizeof(Plane_t)) {
-      Serial.write(data, length);
-    }
   }
 }
 
@@ -99,7 +96,11 @@ void serviceCommandQueue(uint32_t now) {
   if (queueCount == 0) {
     return;
   }
-  if (static_cast<uint32_t>(now - lastRadioActivity) < TX_GUARD_MS) {
+  if (queueWaitSince == 0) {
+    queueWaitSince = now ? now : 1;
+  }
+  bool esperouDemais = static_cast<uint32_t>(now - queueWaitSince) >= TX_GUARD_MAX_WAIT_MS;
+  if (!esperouDemais && static_cast<uint32_t>(now - lastRadioActivity) < TX_GUARD_MS) {
     return;
   }
   if (!lora.waitReady(5)) {
@@ -109,6 +110,7 @@ void serviceCommandQueue(uint32_t now) {
   if (!dequeueCommand(command)) {
     return;
   }
+  queueWaitSince = 0;
   bool ok = rdt.sendMessage(&command, 1);
   sendStatus(command, ok ? CMD_STATUS_OK : CMD_STATUS_FAIL);
   lastRadioActivity = millis();

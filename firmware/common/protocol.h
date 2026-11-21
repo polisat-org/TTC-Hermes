@@ -9,7 +9,7 @@
 #define RDT_HEADER_SIZE 12
 #define RDT_CRC_SIZE 2
 #define RDT_MAX_PAYLOAD 128
-#define RDT_MAX_MESSAGE 384
+#define RDT_MAX_MESSAGE 640   // cabe o maior quadro do OBC ('P' com 20 aviões = 562 B)
 #define RDT_MAX_FRAGS 8
 #define RDT_MAX_PACKET (RDT_HEADER_SIZE + RDT_MAX_PAYLOAD + RDT_CRC_SIZE)
 #define RDT_RX_BUF 512
@@ -22,6 +22,8 @@
 #define CMD_RESPONSE_ID 'A'
 #define TELEMETRY_ID 'T'
 #define PAYLOAD_ID 'P'
+#define THERMAL_ID 'H'
+#define AZIMUTH_ID 'Z'
 #define CMD_STATUS_OK 0x00
 #define CMD_STATUS_FAIL 0x01
 #define CMD_STATUS_BUSY 0x02

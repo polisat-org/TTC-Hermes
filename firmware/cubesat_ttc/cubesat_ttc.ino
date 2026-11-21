@@ -7,6 +7,7 @@
 #include "../common/e32.h"
 #include "../common/rdt3.h"
 #include "../common/uart_rx.h"
+#include "../common/obc_frames.h"
 
 #define E32_RX_PIN 16
 #define E32_TX_PIN 17
@@ -32,18 +33,12 @@ E32Driver lora(LoraSerial, E32_RX_PIN, E32_TX_PIN, E32_M0_PIN, E32_M1_PIN,
 Rdt3 rdt(lora);
 UartRxBuffer<1024> obcRx;
 
-enum ObcParseState : uint8_t {
-  OBC_WAIT_TYPE,
-  OBC_TELEMETRY,
-  OBC_PAYLOAD_COUNT,
-  OBC_PAYLOAD
-};
-
-uint8_t downlinkBuffer[RDT_MAX_MESSAGE];
+// Quadros do OBC: 'T' telemetria, 'P' aviões, 'H' térmico, 'Z' azimute (common/telemetry.h).
+// Cada quadro completo vira UMA mensagem RDT para o solo, sem alteração.
+ObcFrameParser obcParser;
+uint8_t downlinkBuffer[OBC_FRAME_MAX];
 size_t downlinkLen = 0;
 bool downlinkReady = false;
-ObcParseState obcState = OBC_WAIT_TYPE;
-size_t payloadRemaining = 0;
 uint32_t busyHoldUntil = 0;
 uint32_t ledUntil = 0;
 
@@ -82,68 +77,16 @@ void serviceBusy(uint32_t now) {
 }
 
 void serviceObc() {
-  if (downlinkReady) {
-    return;
-  }
+  // Enquanto há um quadro esperando o rádio, os bytes seguintes ficam no buffer da UART (1 KB).
   while (!downlinkReady && obcRx.available() > 0) {
     int value = obcRx.read();
     if (value < 0) {
       break;
     }
-    uint8_t byte = static_cast<uint8_t>(value);
-    switch (obcState) {
-      case OBC_WAIT_TYPE:
-        if (byte == TELEMETRY_ID) {
-          downlinkBuffer[0] = TELEMETRY_ID;
-          downlinkLen = 1;
-          obcState = OBC_TELEMETRY;
-        } else if (byte == PAYLOAD_ID) {
-          downlinkBuffer[0] = PAYLOAD_ID;
-          downlinkLen = 1;
-          obcState = OBC_PAYLOAD_COUNT;
-        }
-        break;
-      case OBC_TELEMETRY:
-        if (downlinkLen >= sizeof(downlinkBuffer)) {
-          downlinkLen = 0;
-          obcState = OBC_WAIT_TYPE;
-          break;
-        }
-        downlinkBuffer[downlinkLen++] = byte;
-        if (downlinkLen == TELEMETRY_FRAME_SIZE) {
-          downlinkReady = true;
-          obcState = OBC_WAIT_TYPE;
-        }
-        break;
-      case OBC_PAYLOAD_COUNT:
-        if (byte <= MAX_PLANES) {
-          downlinkBuffer[1] = byte;
-          downlinkLen = PAYLOAD_HEADER_SIZE;
-          payloadRemaining = static_cast<size_t>(byte) * sizeof(Plane_t);
-          if (payloadRemaining == 0) {
-            downlinkReady = true;
-            obcState = OBC_WAIT_TYPE;
-          } else {
-            obcState = OBC_PAYLOAD;
-          }
-        } else {
-          obcState = OBC_WAIT_TYPE;
-        }
-        break;
-      case OBC_PAYLOAD:
-        if (downlinkLen >= sizeof(downlinkBuffer)) {
-          downlinkLen = 0;
-          payloadRemaining = 0;
-          obcState = OBC_WAIT_TYPE;
-          break;
-        }
-        downlinkBuffer[downlinkLen++] = byte;
-        --payloadRemaining;
-        if (payloadRemaining == 0) {
-          downlinkReady = true;
-          obcState = OBC_WAIT_TYPE;
-        }
-        break;
+    if (obcParser.feed(static_cast<uint8_t>(value), millis())) {
+      downlinkLen = obcParser.length();
+      memcpy(downlinkBuffer, obcParser.frame(), downlinkLen);
+      downlinkReady = true;
     }
   }
 }
@@ -157,7 +100,6 @@ void serviceDownlink() {
   rdt.sendMessage(downlinkBuffer, downlinkLen);
   downlinkReady = false;
   downlinkLen = 0;
-  obcState = OBC_WAIT_TYPE;
   busyHoldUntil = millis() + TTC_BUSY_RELEASE_MS;
 }
 

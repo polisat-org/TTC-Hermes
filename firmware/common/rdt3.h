@@ -19,6 +19,7 @@ class Rdt3 {
     txMsgId_ = 0;
     haveSession_ = false;
     rxLen_ = 0;
+    readyLen_ = 0;
     radio_.clearRx();
     resetAssembly();
   }
@@ -80,6 +81,9 @@ class Rdt3 {
     if (out == nullptr || maxLen == 0) {
       return -1;
     }
+    if (readyLen_ > 0) {             // completada enquanto este lado esperava um ACK
+      return deliverReady(out, maxLen);
+    }
     fillRx();
     PacketInfo info;
     uint8_t payload[RDT_MAX_PAYLOAD];
@@ -87,62 +91,16 @@ class Rdt3 {
       if (info.type != RDT_TYPE_DATA) {
         continue;
       }
-      if (!haveSession_ || info.session != rxSession_) {
-        haveSession_ = true;
-        rxSession_ = info.session;
-        expectedSeq_ = info.seq;
-        lastAckSeq_ = static_cast<uint8_t>(info.seq ^ 1);
-        resetAssembly();
-      }
-      if (info.seq == lastAckSeq_) {
-        sendAck(info);
-        continue;
-      }
-      if (info.seq != expectedSeq_) {
-        continue;
-      }
-      bool valid = info.frag_total > 0 && info.frag_total <= RDT_MAX_FRAGS &&
-                   info.frag_idx < info.frag_total && info.total_len > 0 &&
-                   info.total_len <= RDT_MAX_MESSAGE && info.frag_len > 0;
-      if (valid) {
-        size_t offset = static_cast<size_t>(info.frag_idx) * RDT_MAX_PAYLOAD;
-        if (offset + info.frag_len > RDT_MAX_MESSAGE) {
-          valid = false;
-        }
-      }
-      if (!valid) {
-        continue;
-      }
-      if (info.frag_idx == 0) {
-        rxMsgId_ = info.msg_id;
-        rxTotalFrags_ = info.frag_total;
-        rxTotalLen_ = info.total_len;
-        rxReceivedMask_ = 0;
-        memset(rxAssembly_, 0, sizeof(rxAssembly_));
-      } else if (info.msg_id != rxMsgId_ ||
-                 info.frag_total != rxTotalFrags_ ||
-                 info.total_len != rxTotalLen_) {
-        continue;
-      }
-      size_t offset = static_cast<size_t>(info.frag_idx) * RDT_MAX_PAYLOAD;
-      memcpy(rxAssembly_ + offset, payload, info.frag_len);
-      rxReceivedMask_ |= static_cast<uint8_t>(1u << info.frag_idx);
-      expectedSeq_ ^= 1;
-      lastAckSeq_ = info.seq;
-      sendAck(info);
-      uint8_t fullMask =
-          rxTotalFrags_ >= 8 ? 0xFF : static_cast<uint8_t>((1u << rxTotalFrags_) - 1);
-      if ((rxReceivedMask_ & fullMask) == fullMask) {
-        if (rxTotalLen_ <= maxLen) {
-          memcpy(out, rxAssembly_, rxTotalLen_);
-          rxReceivedMask_ = 0;
-          return static_cast<int>(rxTotalLen_);
-        }
-        rxReceivedMask_ = 0;
+      if (handleData(info, payload)) {
+        return deliverReady(out, maxLen);
       }
     }
     return -1;
   }
+
+  // Mensagens recebidas inteiras e pacotes ruins (para diagnóstico).
+  uint32_t messagesReceived() const { return messagesRx_; }
+  uint32_t badPackets() const { return badPackets_; }
 
  private:
   struct PacketInfo {
@@ -155,6 +113,74 @@ class Rdt3 {
     uint16_t total_len;
     uint16_t frag_len;
   };
+
+  // Trata um pacote DATA: ACK, remontagem. Devolve true quando completa uma mensagem (em ready_).
+  bool handleData(const PacketInfo &info, const uint8_t *payload) {
+    if (!haveSession_ || info.session != rxSession_) {
+      haveSession_ = true;
+      rxSession_ = info.session;
+      expectedSeq_ = info.seq;
+      lastAckSeq_ = static_cast<uint8_t>(info.seq ^ 1);
+      resetAssembly();
+    }
+    if (info.seq == lastAckSeq_) {
+      sendAck(info);               // duplicata: o ACK anterior se perdeu
+      return false;
+    }
+    if (info.seq != expectedSeq_) {
+      return false;
+    }
+    if (readyLen_ > 0) {
+      return false;                // ainda não entregou a anterior: sem ACK, o outro lado retransmite
+    }
+    bool valid = info.frag_total > 0 && info.frag_total <= RDT_MAX_FRAGS &&
+                 info.frag_idx < info.frag_total && info.total_len > 0 &&
+                 info.total_len <= RDT_MAX_MESSAGE && info.frag_len > 0;
+    if (valid) {
+      size_t offset = static_cast<size_t>(info.frag_idx) * RDT_MAX_PAYLOAD;
+      if (offset + info.frag_len > RDT_MAX_MESSAGE) {
+        valid = false;
+      }
+    }
+    if (!valid) {
+      return false;
+    }
+    if (info.frag_idx == 0) {
+      rxMsgId_ = info.msg_id;
+      rxTotalFrags_ = info.frag_total;
+      rxTotalLen_ = info.total_len;
+      rxReceivedMask_ = 0;
+    } else if (info.msg_id != rxMsgId_ ||
+               info.frag_total != rxTotalFrags_ ||
+               info.total_len != rxTotalLen_) {
+      return false;
+    }
+    size_t offset = static_cast<size_t>(info.frag_idx) * RDT_MAX_PAYLOAD;
+    memcpy(rxAssembly_ + offset, payload, info.frag_len);
+    rxReceivedMask_ |= static_cast<uint8_t>(1u << info.frag_idx);
+    expectedSeq_ ^= 1;
+    lastAckSeq_ = info.seq;
+    sendAck(info);
+    uint8_t fullMask =
+        rxTotalFrags_ >= 8 ? 0xFF : static_cast<uint8_t>((1u << rxTotalFrags_) - 1);
+    if ((rxReceivedMask_ & fullMask) == fullMask) {
+      rxReceivedMask_ = 0;
+      readyLen_ = rxTotalLen_;
+      ++messagesRx_;
+      return true;
+    }
+    return false;
+  }
+
+  int deliverReady(uint8_t *out, size_t maxLen) {
+    size_t n = readyLen_;
+    readyLen_ = 0;
+    if (n > maxLen) {
+      return -1;
+    }
+    memcpy(out, rxAssembly_, n);
+    return static_cast<int>(n);
+  }
 
   void resetAssembly() {
     rxMsgId_ = 0;
@@ -201,6 +227,7 @@ class Rdt3 {
       uint16_t receivedCrc = static_cast<uint16_t>(rxBuffer_[packetLen - 2]) |
                              (static_cast<uint16_t>(rxBuffer_[packetLen - 1]) << 8);
       if (crc16_ccitt_false(rxBuffer_, packetLen - RDT_CRC_SIZE) != receivedCrc) {
+        ++badPackets_;
         dropFront(1);
         continue;
       }
@@ -235,6 +262,11 @@ class Rdt3 {
             info.msg_id == msgId && info.frag_idx == fragIdx &&
             info.seq == seq) {
           return true;
+        }
+        // Os dois lados podem transmitir ao mesmo tempo (TC subindo, TM descendo). Descartar o DATA
+        // do outro lado aqui travava o enlace: cada um retransmitia esperando o próprio ACK.
+        if (info.type == RDT_TYPE_DATA) {
+          handleData(info, payload);
         }
       }
       delay(1);
@@ -278,4 +310,7 @@ class Rdt3 {
   uint8_t rxAssembly_[RDT_MAX_MESSAGE];
   uint8_t rxBuffer_[RDT_RX_BUF];
   size_t rxLen_ = 0;
+  size_t readyLen_ = 0;          // mensagem completa em rxAssembly_ esperando o pollMessage
+  uint32_t messagesRx_ = 0;
+  uint32_t badPackets_ = 0;
 };

@@ -8,7 +8,7 @@
 //
 //   PC  -> ESP32 : byte de comando 0x00..0x0F  -> repassado ao OBC
 //   ESP32 -> PC  : 'A' cmd 0x00   (comando entregue na UART do OBC)
-//                  'T' + Telemetry_t, 'P' + count + Plane_t[]  (vindos do OBC)
+//                  'T' + Telemetry_t, 'P' + count + Plane_t[], 'H' + TcsStatus_t, 'Z' + azimute (vindos do OBC)
 //
 // Ligação (3,3 V nos dois lados, GND comum obrigatório):
 //   ESP32 GPIO16 (RX2) <- TX do OBC   (Nucleo D8 / PA9)
@@ -24,6 +24,7 @@
 
 #include "../common/protocol.h"
 #include "../common/telemetry.h"
+#include "../common/obc_frames.h"
 
 #ifndef OBC_RX_PIN
 #define OBC_RX_PIN 16  // RX2
@@ -41,12 +42,7 @@
 
 HardwareSerial ObcSerial(2);
 
-enum ObcParseState : uint8_t { WAIT_TYPE, TELEMETRY, PAYLOAD_COUNT, PAYLOAD };
-
-uint8_t frame[PAYLOAD_MAX_SIZE > TELEMETRY_FRAME_SIZE ? PAYLOAD_MAX_SIZE : TELEMETRY_FRAME_SIZE];
-size_t frameLen = 0;
-size_t payloadRemaining = 0;
-ObcParseState state = WAIT_TYPE;
+ObcFrameParser obcParser;
 uint32_t ledUntil = 0;
 uint32_t lastObcFrame = 0;
 
@@ -105,52 +101,11 @@ void obcFrameDone(bool isPayload) {
   else playPattern(PATTERN_TM, 1);
 }
 
-// Mesmo parser de quadros do cubesat_ttc (detalhamento §10.3).
+// Mesmo parser de quadros do cubesat_ttc (common/obc_frames.h).
 void feedObcByte(uint8_t b) {
-  switch (state) {
-    case WAIT_TYPE:
-      if (b == TELEMETRY_ID) {
-        frame[0] = b;
-        frameLen = 1;
-        state = TELEMETRY;
-      } else if (b == PAYLOAD_ID) {
-        frame[0] = b;
-        frameLen = 1;
-        state = PAYLOAD_COUNT;
-      }
-      break;
-    case TELEMETRY:
-      frame[frameLen++] = b;
-      if (frameLen == TELEMETRY_FRAME_SIZE) {
-        Serial.write(frame, frameLen);
-        obcFrameDone(false);
-        state = WAIT_TYPE;
-      }
-      break;
-    case PAYLOAD_COUNT:
-      if (b <= MAX_PLANES) {
-        frame[1] = b;
-        frameLen = PAYLOAD_HEADER_SIZE;
-        payloadRemaining = static_cast<size_t>(b) * sizeof(Plane_t);
-        if (payloadRemaining == 0) {
-          Serial.write(frame, frameLen);
-          obcFrameDone(true);
-          state = WAIT_TYPE;
-        } else {
-          state = PAYLOAD;
-        }
-      } else {
-        state = WAIT_TYPE;
-      }
-      break;
-    case PAYLOAD:
-      frame[frameLen++] = b;
-      if (--payloadRemaining == 0) {
-        Serial.write(frame, frameLen);
-        obcFrameDone(true);
-        state = WAIT_TYPE;
-      }
-      break;
+  if (obcParser.feed(b, millis())) {
+    Serial.write(obcParser.frame(), obcParser.length());
+    obcFrameDone(obcParser.type() == PAYLOAD_ID);
   }
 }
 
