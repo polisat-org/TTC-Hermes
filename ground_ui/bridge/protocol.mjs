@@ -1,15 +1,17 @@
-// Protocolo Ground ESP32 <-> PC (USB 115200 8N1), conforme detalhamento_ttc.md §4
-// e common/telemetry.h. Toda decodificação de bytes fica neste arquivo: se
-// Telemetry_t ou Plane_t mudarem no firmware, altere SOMENTE aqui.
+// Protocolo Ground ESP32 <-> PC (USB 115200 8N1). O ground_ttc.ino repassa à USB, sem alteração, cada
+// quadro do OBC recebido pelo rádio, e responde 'A' a cada telecomando. Os formatos são os do firmware
+// do OBC (polisat-org/OBC, Core/Inc/customTypes.h e payload_downlink.h) e de firmware/common/telemetry.h.
+// Toda decodificação de bytes fica neste arquivo: se um struct mudar no OBC, altere SOMENTE aqui.
 //
-//   PC -> Ground : 1 byte de comando 0x00..0x0F (bitmask)
-//   Ground -> PC : 'A' cmd status            (3 bytes)
-//                  'T' Telemetry_t           (1 + 79 bytes)
-//                  'P' count count*Plane_t   (2 + 16*count bytes, count <= 20)
+//   PC -> Ground : 1 byte de comando 0x00..0x0F (bitmask Mission/Deploy/Detumbling/Pointing)
+//   Ground -> PC : 'A' cmd status                 (3 B)      resposta do ground ao telecomando
+//                  'T' Telemetry_t                (1 + 85 B) housekeeping do OBC, a cada 60 s
+//                  'P' n n*Plane_t                (2 + 28n B, n <= 20) aviões ADS-B, a cada 5 s na missão
+//                  'H' TcsStatus_t                (1 + 32 B) controle térmico do payload, junto com o 'P'
+//                  'Z' "ddd.d"                    (1 + 5 B)  azimute do ADCS, até 1 por segundo
 //
-// O enlace USB atual NÃO tem cabeçalho de sincronismo nem CRC. O parser abaixo
-// ressincroniza por plausibilidade: um byte que não inicia um quadro válido é
-// descartado (e guardado como "console", p.ex. mensagens de boot do ESP32).
+// O enlace USB NÃO tem sincronismo nem CRC próprio. O parser ressincroniza por plausibilidade: um byte que
+// não inicia um quadro válido é descartado (e guardado como "console", p.ex. mensagens de boot do ESP32).
 
 export const CMD_MAX = 0x0f;
 export const CMD_BITS = [
@@ -23,93 +25,99 @@ export const CMD_STATUS = { 0: 'ok', 1: 'fail', 2: 'busy' };
 export const ID_ACK = 0x41; // 'A'
 export const ID_TELEMETRY = 0x54; // 'T'
 export const ID_PAYLOAD = 0x50; // 'P'
+export const ID_THERMAL = 0x48; // 'H'
+export const ID_AZIMUTH = 0x5a; // 'Z'
 
-export const TELEMETRY_SIZE = 79;
-export const PLANE_SIZE = 16;
+export const TELEMETRY_SIZE = 85;
+export const PLANE_SIZE = 28;
 export const MAX_PLANES = 20;
+export const THERMAL_SIZE = 32;
+export const AZIMUTH_LEN = 5;
+export const TCS_TEMP_INVALID = -32768;
 
-// Tempo máximo esperando o resto de um quadro antes de considerar o byte
-// inicial como ruído.
+// Tempo máximo esperando o resto de um quadro antes de considerar o byte inicial como ruído.
 const PARTIAL_TIMEOUT_MS = 1500;
 
-/** Decodifica Telemetry_t (packed, little-endian). */
+// ------------------------------------------------------------------ Telemetry_t (85 B, packed, LE)
+// Ordem e tipos de customTypes.h do OBC. Unidades: temperaturas °C, umidade %, pressão hPa (BME280),
+// tensões V e correntes A (INA3221), status/falha = registradores 0x0C/0x0D do MP2733, tensão da bateria mV e
+// carga % (MAX17048), angulo_apontamento = último azimute do ADCS ("ddd.d", vazio se nunca chegou).
+export const TELEMETRY_FIELDS = [
+  ['hora', 'u8'], ['minuto', 'u8'], ['segundo', 'u8'], ['dia', 'u8'], ['mes', 'u8'], ['ano', 'u8'],
+  ['temperatura_bateria', 'f32'], ['temperatura_estrutura', 'f32'], ['umidade', 'f32'], ['pressao', 'f32'],
+  ['deploy_antena', 'u8'],
+  ['tensao_13v8', 'f32'], ['tensao_5v', 'f32'], ['corrente_13v8', 'f32'], ['corrente_5v', 'f32'],
+  ['tensao_painel_solar_1', 'f32'], ['tensao_painel_solar_2', 'f32'], ['tensao_painel_solar_3', 'f32'], ['tensao_painel_solar_4', 'f32'],
+  ['status_carregador_1', 'u8'], ['status_carregador_2', 'u8'], ['falha_carregador_1', 'u8'], ['falha_carregador_2', 'u8'],
+  ['adc_tensao_sistema_1', 'u8'], ['adc_tensao_sistema_2', 'u8'], ['adc_tensao_ntc_1', 'u8'], ['adc_tensao_ntc_2', 'u8'],
+  ['adc_corrente_carga_1', 'u8'], ['adc_corrente_carga_2', 'u8'], ['adc_corrente_sistema_1', 'u8'], ['adc_corrente_sistema_2', 'u8'],
+  ['angulo_apontamento', 'str6'],
+  ['tensao_bateria_1', 'u16'], ['tensao_bateria_2', 'u16'], ['carga_bateria_1', 'u16'], ['carga_bateria_2', 'u16'],
+  ['taxa_carga_descarga_bateria_1', 'i16'], ['taxa_carga_descarga_bateria_2', 'i16'],
+];
+const SIZES = { u8: 1, u16: 2, i16: 2, f32: 4, str6: 6 };
+if (TELEMETRY_FIELDS.reduce((s, [, t]) => s + SIZES[t], 0) !== TELEMETRY_SIZE) throw new Error('Telemetry_t != 85 B');
+
+/** Decodifica Telemetry_t (85 B a partir de off). */
 export function decodeTelemetry(buf, off = 0) {
   const v = new DataView(buf.buffer, buf.byteOffset + off, TELEMETRY_SIZE);
-  const i16 = (o) => v.getInt16(o, true);
-  const f32 = (o) => v.getFloat32(o, true);
-  const reserved = Array.from(buf.subarray(off + 64, off + 79));
-  return {
-    timestamp_ms: v.getUint32(0, true),
-    uptime_ms: v.getUint32(4, true),
-    mode: v.getUint8(8),
-    flags: v.getUint8(9),
-    error_count: v.getUint16(10, true),
-    battery_voltage: f32(12),
-    battery_current: f32(16),
-    temperature: f32(20),
-    gyro: [i16(24), i16(26), i16(28)],
-    accel: [i16(30), i16(32), i16(34)],
-    mag: [i16(36), i16(38), i16(40)],
-    latitude: f32(42),
-    longitude: f32(46),
-    altitude: f32(50),
-    deploy_state: v.getUint8(54),
-    detumbling_state: v.getUint8(55),
-    pointing_state: v.getUint8(56),
-    mission_state: v.getUint8(57),
-    command_count: v.getUint16(58, true),
-    telemetry_count: v.getUint16(60, true),
-    packet_count: v.getUint16(62, true),
-    reserved,
-    // Notion/OBC: ADCS devolve o azimute como string de 5 chars ("270.5"),
-    // que vai para o struct de telemetria. Ainda não há campo dedicado;
-    // proposta: reserved[0..4]. Só é exposto se for ASCII imprimível.
-    azimuth_str: asciiOrNull(reserved.slice(0, 5)),
-  };
+  const out = {};
+  let o = 0;
+  for (const [name, type] of TELEMETRY_FIELDS) {
+    switch (type) {
+      case 'u8': out[name] = v.getUint8(o); break;
+      case 'u16': out[name] = v.getUint16(o, true); break;
+      case 'i16': out[name] = v.getInt16(o, true); break;
+      case 'f32': out[name] = v.getFloat32(o, true); break;
+      case 'str6': {
+        const b = buf.subarray(off + o, off + o + 6);
+        const end = b.indexOf(0);
+        out[name] = String.fromCharCode(...b.subarray(0, end < 0 ? 6 : end));
+        break;
+      }
+    }
+    o += SIZES[type];
+  }
+  out.azimuth = parseAzimuth(out.angulo_apontamento);
+  return out;
 }
 
-/** Decodifica Plane_t (packed, little-endian). */
-export function decodePlane(buf, off = 0) {
-  const v = new DataView(buf.buffer, buf.byteOffset + off, PLANE_SIZE);
-  return {
-    id: v.getUint16(0, true),
-    type: v.getUint8(2),
-    flags: v.getUint8(3),
-    latitude: v.getFloat32(4, true),
-    longitude: v.getFloat32(8, true),
-    confidence: v.getFloat32(12, true),
-  };
-}
-
-/** Codifica Telemetry_t — usado pelo simulador e pelos testes. */
+/** Codifica 'T' + Telemetry_t — usado pelo simulador e pelos testes. Campos ausentes vão com 0. */
 export function encodeTelemetry(t) {
   const b = new Uint8Array(1 + TELEMETRY_SIZE);
   b[0] = ID_TELEMETRY;
   const v = new DataView(b.buffer, 1, TELEMETRY_SIZE);
-  v.setUint32(0, t.timestamp_ms >>> 0, true);
-  v.setUint32(4, t.uptime_ms >>> 0, true);
-  v.setUint8(8, t.mode & 0xff);
-  v.setUint8(9, t.flags & 0xff);
-  v.setUint16(10, t.error_count & 0xffff, true);
-  v.setFloat32(12, t.battery_voltage, true);
-  v.setFloat32(16, t.battery_current, true);
-  v.setFloat32(20, t.temperature, true);
-  [...t.gyro, ...t.accel, ...t.mag].forEach((x, i) => v.setInt16(24 + 2 * i, x, true));
-  v.setFloat32(42, t.latitude, true);
-  v.setFloat32(46, t.longitude, true);
-  v.setFloat32(50, t.altitude, true);
-  v.setUint8(54, t.deploy_state);
-  v.setUint8(55, t.detumbling_state);
-  v.setUint8(56, t.pointing_state);
-  v.setUint8(57, t.mission_state);
-  v.setUint16(58, t.command_count & 0xffff, true);
-  v.setUint16(60, t.telemetry_count & 0xffff, true);
-  v.setUint16(62, t.packet_count & 0xffff, true);
-  (t.reserved || []).slice(0, 15).forEach((x, i) => v.setUint8(64 + i, x));
+  let o = 0;
+  for (const [name, type] of TELEMETRY_FIELDS) {
+    const x = t[name] ?? 0;
+    switch (type) {
+      case 'u8': v.setUint8(o, x & 0xff); break;
+      case 'u16': v.setUint16(o, x & 0xffff, true); break;
+      case 'i16': v.setInt16(o, x, true); break;
+      case 'f32': v.setFloat32(o, x, true); break;
+      case 'str6': for (let i = 0; i < 5 && i < String(x || '').length; i++) b[1 + o + i] = String(x).charCodeAt(i); break;
+    }
+    o += SIZES[type];
+  }
   return b;
 }
 
-/** Codifica 'P' + count + Plane_t[] — usado pelo simulador e pelos testes. */
+// ------------------------------------------------------------------ Plane_t (PlaneDown_t do OBC, 28 B)
+/** Decodifica um avião. NaN = campo ausente no ADS-B. */
+export function decodePlane(buf, off = 0) {
+  const v = new DataView(buf.buffer, buf.byteOffset + off, PLANE_SIZE);
+  return {
+    icao: v.getUint32(0, true),
+    latitude: v.getFloat32(4, true),
+    longitude: v.getFloat32(8, true),
+    altitude_ft: v.getFloat32(12, true),
+    velocity_kt: v.getFloat32(16, true),
+    track_deg: v.getFloat32(20, true),
+    last_pos_met_ms: v.getUint32(24, true), // tempo de missão da posição; 0 = inválido
+  };
+}
+
+/** Codifica 'P' + n + Plane_t[] — usado pelo simulador e pelos testes. */
 export function encodePayload(planes) {
   const n = Math.min(planes.length, MAX_PLANES);
   const b = new Uint8Array(2 + n * PLANE_SIZE);
@@ -119,14 +127,85 @@ export function encodePayload(planes) {
   for (let i = 0; i < n; i++) {
     const o = 2 + i * PLANE_SIZE;
     const p = planes[i];
-    v.setUint16(o, p.id & 0xffff, true);
-    v.setUint8(o + 2, p.type & 0xff);
-    v.setUint8(o + 3, p.flags & 0xff);
-    v.setFloat32(o + 4, p.latitude, true);
-    v.setFloat32(o + 8, p.longitude, true);
-    v.setFloat32(o + 12, p.confidence, true);
+    v.setUint32(o, p.icao >>> 0, true);
+    v.setFloat32(o + 4, p.latitude ?? NaN, true);
+    v.setFloat32(o + 8, p.longitude ?? NaN, true);
+    v.setFloat32(o + 12, p.altitude_ft ?? NaN, true);
+    v.setFloat32(o + 16, p.velocity_kt ?? NaN, true);
+    v.setFloat32(o + 20, p.track_deg ?? NaN, true);
+    v.setUint32(o + 24, p.last_pos_met_ms >>> 0, true);
   }
   return b;
+}
+
+// ------------------------------------------------------------------ TcsStatus_t (trailer do payload, 32 B)
+// Códigos de situação de cada bloco de aquecimento (bits, iguais ao TCS do Raspberry).
+export const TCS_SITUATION = [
+  [1, 'no probe'], [2, 'cut-off'], [4, 'single probe'], [8, 'uncalibrated'],
+  [16, 'slow reading'], [32, 'disagrees with other block'], [64, 'heater not responding'],
+];
+
+export function crc16ccitt(bytes) {
+  let crc = 0xffff;
+  for (const b of bytes) {
+    crc ^= b << 8;
+    for (let i = 0; i < 8; i++) crc = crc & 0x8000 ? ((crc << 1) ^ 0x1021) & 0xffff : (crc << 1) & 0xffff;
+  }
+  return crc;
+}
+
+/** Decodifica o trailer TCS (32 B a partir de off). */
+export function decodeThermal(buf, off = 0) {
+  const v = new DataView(buf.buffer, buf.byteOffset + off, THERMAL_SIZE);
+  const temp = (x) => (x === TCS_TEMP_INVALID ? null : x / 100);
+  const age = v.getUint16(6, true);
+  return {
+    magic: String.fromCharCode(...buf.subarray(off, off + 4)),
+    version: v.getUint8(4),
+    valid: (v.getUint8(5) & 1) === 1,
+    age_s: age === 0xffff ? null : age / 10,
+    probes_c: [0, 1, 2, 3].map((i) => temp(v.getInt16(8 + 2 * i, true))),
+    duty_pct: [v.getUint8(16), v.getUint8(17)],
+    situation: [v.getUint8(18), v.getUint8(19)],
+    tcs_time_s: v.getUint32(20, true) / 10,
+    mission: v.getUint8(24) === 1,
+    planes: v.getUint8(25),
+    crc_ok: crc16ccitt(buf.subarray(off, off + 30)) === v.getUint16(30, true),
+  };
+}
+
+/** Codifica 'H' + TcsStatus_t — usado pelo simulador e pelos testes. */
+export function encodeThermal(t) {
+  const b = new Uint8Array(1 + THERMAL_SIZE);
+  b[0] = ID_THERMAL;
+  const v = new DataView(b.buffer, 1, THERMAL_SIZE);
+  b.set([...'TCS1'].map((c) => c.charCodeAt(0)), 1);
+  v.setUint8(4, 1);
+  v.setUint8(5, t.valid === false ? 0 : 1);
+  v.setUint16(6, t.age_s == null ? 0xffff : Math.round(t.age_s * 10), true);
+  for (let i = 0; i < 4; i++) v.setInt16(8 + 2 * i, t.probes_c?.[i] == null ? TCS_TEMP_INVALID : Math.round(t.probes_c[i] * 100), true);
+  v.setUint8(16, t.duty_pct?.[0] ?? 0);
+  v.setUint8(17, t.duty_pct?.[1] ?? 0);
+  v.setUint8(18, t.situation?.[0] ?? 0);
+  v.setUint8(19, t.situation?.[1] ?? 0);
+  v.setUint32(20, Math.round((t.tcs_time_s ?? 0) * 10) >>> 0, true);
+  v.setUint8(24, t.mission ? 1 : 0);
+  v.setUint8(25, t.planes ?? 0);
+  v.setUint16(30, crc16ccitt(b.subarray(1, 31)), true);
+  return b;
+}
+
+// ------------------------------------------------------------------ azimute 'Z'
+/** "ddd.d" (000.0..359.9) -> graus; null se não estiver no formato. */
+export function parseAzimuth(s) {
+  if (!/^\d{3}\.\d$/.test(s)) return null;
+  const v = Number(s);
+  return v < 360 ? v : null;
+}
+
+export function encodeAzimuth(deg) {
+  const s = (Math.round(deg * 10) / 10).toFixed(1).padStart(5, '0');
+  return Uint8Array.of(ID_AZIMUTH, ...[...s].map((c) => c.charCodeAt(0)));
 }
 
 export function encodeAck(cmd, status) {
@@ -141,40 +220,36 @@ export function encodeCommand(mask) {
   return Uint8Array.of(mask);
 }
 
-function asciiOrNull(bytes) {
-  if (bytes.every((c) => c === 0)) return null;
-  if (!bytes.every((c) => c >= 0x20 && c < 0x7f)) return null;
-  return String.fromCharCode(...bytes);
-}
-
 // --- plausibilidade (rejeita quadros falsos criados por ruído/texto) -------
 const finiteOrNaN = (x, lim) => Number.isNaN(x) || (Number.isFinite(x) && Math.abs(x) <= lim);
 const latOk = (x) => Number.isNaN(x) || (x >= -90 && x <= 90);
 const lonOk = (x) => Number.isNaN(x) || (x >= -180 && x <= 180);
 
 function telemetryPlausible(t) {
+  const floats = TELEMETRY_FIELDS.filter(([, ty]) => ty === 'f32').every(([n]) => finiteOrNaN(t[n], 1e6));
+  const azOk = t.angulo_apontamento === '' || t.azimuth !== null;
   return (
-    finiteOrNaN(t.battery_voltage, 1e4) &&
-    finiteOrNaN(t.battery_current, 1e4) &&
-    finiteOrNaN(t.temperature, 1e4) &&
-    latOk(t.latitude) &&
-    lonOk(t.longitude) &&
-    finiteOrNaN(t.altitude, 1e7)
+    t.hora <= 23 && t.minuto <= 59 && t.segundo <= 59 && t.dia <= 31 && t.mes <= 12 && t.ano <= 99 &&
+    t.deploy_antena <= 1 && floats && azOk
   );
 }
 
-const isFrameStart = (b) => b === ID_ACK || b === ID_TELEMETRY || b === ID_PAYLOAD;
-
 function planePlausible(p) {
-  return latOk(p.latitude) && lonOk(p.longitude) && finiteOrNaN(p.confidence, 1e6);
+  return (
+    p.icao > 0 && p.icao <= 0xffffff && latOk(p.latitude) && lonOk(p.longitude) &&
+    finiteOrNaN(p.altitude_ft, 1e5) && finiteOrNaN(p.velocity_kt, 1e4) && finiteOrNaN(p.track_deg, 360)
+  );
 }
 
+const isFrameStart = (b) => b === ID_ACK || b === ID_TELEMETRY || b === ID_PAYLOAD || b === ID_THERMAL || b === ID_AZIMUTH;
+
 /**
- * Parser incremental de fluxo. Chame push(bytes, now) a cada chunk recebido;
- * retorna lista de eventos:
+ * Parser incremental de fluxo. Chame push(bytes, now) a cada chunk recebido; retorna lista de eventos:
  *   {kind:'ack', cmd, status}
  *   {kind:'telemetry', data, raw}
  *   {kind:'payload', planes, raw}
+ *   {kind:'thermal', data, raw}
+ *   {kind:'azimuth', value, text}
  *   {kind:'console', text}         bytes de ruído imprimíveis (boot, debug)
  */
 export class StreamParser {
@@ -182,7 +257,7 @@ export class StreamParser {
     this.buf = new Uint8Array(0);
     this.partialSince = null;
     this.noise = [];
-    this.stats = { frames: 0, telemetry: 0, payload: 0, ack: 0, droppedBytes: 0, rejected: 0 };
+    this.stats = { frames: 0, telemetry: 0, payload: 0, thermal: 0, azimuth: 0, ack: 0, droppedBytes: 0, rejected: 0 };
   }
 
   push(chunk, now = Date.now()) {
@@ -205,6 +280,8 @@ export class StreamParser {
       let need = 0;
       if (id === ID_ACK) need = 3;
       else if (id === ID_TELEMETRY) need = 1 + TELEMETRY_SIZE;
+      else if (id === ID_THERMAL) need = 1 + THERMAL_SIZE;
+      else if (id === ID_AZIMUTH) need = 1 + AZIMUTH_LEN;
       else if (id === ID_PAYLOAD) {
         if (avail >= 2) {
           const count = this.buf[pos + 1];
@@ -220,17 +297,26 @@ export class StreamParser {
       }
 
       if (avail < need) {
-        // 'P' incompleto: rejeita cedo se algum Plane_t já completo for implausível
+        // rejeita cedo o que já dá para ver que não é quadro (evita esperar o timeout com o fluxo travado)
+        let bad = false;
         if (id === ID_PAYLOAD && avail >= 2) {
           const full = Math.floor((avail - 2) / PLANE_SIZE);
-          let bad = false;
           for (let i = 0; i < full && !bad; i++) bad = !planePlausible(decodePlane(this.buf, pos + 2 + i * PLANE_SIZE));
-          if (bad) {
-            this.stats.rejected++;
-            this.partialSince = null;
-            drop();
-            continue;
+        } else if (id === ID_THERMAL) {
+          const m = 'TCS1';
+          for (let i = 1; i < Math.min(avail, 5) && !bad; i++) bad = this.buf[pos + i] !== m.charCodeAt(i - 1);
+        } else if (id === ID_AZIMUTH) {
+          const fmt = 'ddd.d';
+          for (let i = 1; i < avail && !bad; i++) {
+            const c = this.buf[pos + i];
+            bad = fmt[i - 1] === '.' ? c !== 0x2e : c < 0x30 || c > 0x39;
           }
+        }
+        if (bad) {
+          this.stats.rejected++;
+          this.partialSince = null;
+          drop();
+          continue;
         }
         // quadro incompleto: espera mais bytes, mas não para sempre
         if (this.partialSince === null) this.partialSince = now;
@@ -252,6 +338,13 @@ export class StreamParser {
       } else if (id === ID_TELEMETRY) {
         const data = decodeTelemetry(raw, 1);
         if (telemetryPlausible(data)) ev = { kind: 'telemetry', data, raw };
+      } else if (id === ID_THERMAL) {
+        const data = decodeThermal(raw, 1);
+        if (data.magic === 'TCS1' && data.crc_ok) ev = { kind: 'thermal', data, raw };
+      } else if (id === ID_AZIMUTH) {
+        const text = String.fromCharCode(...raw.subarray(1));
+        const value = parseAzimuth(text);
+        if (value !== null) ev = { kind: 'azimuth', value, text };
       } else {
         const count = raw[1];
         const planes = [];
@@ -264,10 +357,8 @@ export class StreamParser {
         if (ok) ev = { kind: 'payload', planes, raw };
       }
 
-      // Confirmação por look-ahead: num fluxo alinhado, o byte logo após um
-      // quadro é o início do próximo ('A'/'T'/'P') ou o fim do buffer. Um
-      // quadro "falso" formado a partir de ruído quase sempre termina no meio
-      // de um quadro real, e é rejeitado aqui.
+      // Confirmação por look-ahead: num fluxo alinhado, o byte logo após um quadro é o início do próximo ou o
+      // fim do buffer. Um quadro "falso" formado a partir de ruído quase sempre termina no meio de um real.
       if (ev && avail > need && !isFrameStart(this.buf[pos + need])) ev = null;
 
       if (ev) {

@@ -3,7 +3,8 @@
 //
 //   node bridge/server.mjs --port COM5           # hardware (Windows)
 //   node bridge/server.mjs --port /dev/ttyUSB0   # hardware (Linux)
-//   node bridge/server.mjs --sim                 # simulador, sem hardware
+//   node bridge/server.mjs --sim                 # simulador, sem hardware ('T' a cada --sim-tm-s, padrão 10 s;
+//                                                # o OBC real manda a cada 60 s)
 //   node bridge/server.mjs --replay logs/<sessao>/raw.jsonl [--speed 4]
 //   node bridge/server.mjs --list                # lista portas seriais
 //   node bridge/server.mjs --tcp-listen 8766     # WSL: a porta COM é lida no Windows por
@@ -19,7 +20,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
-import { StreamParser, encodeCommand, toHex, fromHex, CMD_STATUS } from './protocol.mjs';
+import { StreamParser, encodeCommand, toHex, fromHex, CMD_STATUS, TELEMETRY_FIELDS } from './protocol.mjs';
 import { GroundSimulator } from './sim.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -64,13 +65,13 @@ class SessionLog {
     this.events = open('events.jsonl');
     this.tm = open('telemetry.csv');
     this.planes = open('planes.csv');
+    this.thermal = open('thermal.csv');
+    this.azimuth = open('azimuth.csv');
     this.cmds = open('commands.csv');
-    this.tm.write(
-      'pc_time_iso,pc_time_ms,timestamp_ms,uptime_ms,mode,flags,error_count,battery_voltage,battery_current,temperature,' +
-        'gyro_x,gyro_y,gyro_z,accel_x,accel_y,accel_z,mag_x,mag_y,mag_z,latitude,longitude,altitude,' +
-        'deploy_state,detumbling_state,pointing_state,mission_state,command_count,telemetry_count,packet_count,azimuth_str,reserved_hex\n',
-    );
-    this.planes.write('pc_time_iso,pc_time_ms,frame_idx,count,id,type,flags,latitude,longitude,confidence\n');
+    this.tm.write(['pc_time_iso', 'pc_time_ms', ...TELEMETRY_FIELDS.map(([n]) => n)].join(',') + '\n');
+    this.planes.write('pc_time_iso,pc_time_ms,frame_idx,count,icao_hex,latitude,longitude,altitude_ft,velocity_kt,track_deg,last_pos_met_ms\n');
+    this.thermal.write('pc_time_iso,pc_time_ms,valid,age_s,probe1_c,probe2_c,probe3_c,probe4_c,duty_a,duty_b,situation_a,situation_b,tcs_time_s,mission,planes\n');
+    this.azimuth.write('pc_time_iso,pc_time_ms,azimuth_deg\n');
     this.cmds.write('pc_time_iso,pc_time_ms,event,cmd_hex,status\n');
     this.frameIdx = 0;
     fs.writeFileSync(
@@ -86,19 +87,23 @@ class SessionLog {
     const iso = new Date(ev.t).toISOString();
     if (ev.type === 'telemetry') {
       const d = ev.data;
-      const row = [
-        iso, ev.t, d.timestamp_ms, d.uptime_ms, d.mode, d.flags, d.error_count,
-        d.battery_voltage, d.battery_current, d.temperature, ...d.gyro, ...d.accel, ...d.mag,
-        d.latitude, d.longitude, d.altitude, d.deploy_state, d.detumbling_state, d.pointing_state,
-        d.mission_state, d.command_count, d.telemetry_count, d.packet_count,
-        d.azimuth_str ?? '', Buffer.from(d.reserved).toString('hex'),
-      ];
-      this.tm.write(row.join(',') + '\n');
+      this.tm.write([iso, ev.t, ...TELEMETRY_FIELDS.map(([n]) => d[n])].join(',') + '\n');
     } else if (ev.type === 'payload') {
       const idx = this.frameIdx++;
       for (const p of ev.planes) {
-        this.planes.write([iso, ev.t, idx, ev.planes.length, p.id, p.type, p.flags, p.latitude, p.longitude, p.confidence].join(',') + '\n');
+        this.planes.write(
+          [iso, ev.t, idx, ev.planes.length, p.icao.toString(16).padStart(6, '0'), p.latitude, p.longitude, p.altitude_ft,
+            p.velocity_kt, p.track_deg, p.last_pos_met_ms].join(',') + '\n',
+        );
       }
+    } else if (ev.type === 'thermal') {
+      const d = ev.data;
+      this.thermal.write(
+        [iso, ev.t, d.valid ? 1 : 0, d.age_s ?? '', ...d.probes_c.map((x) => x ?? ''), ...d.duty_pct, ...d.situation,
+          d.tcs_time_s, d.mission ? 1 : 0, d.planes].join(',') + '\n',
+      );
+    } else if (ev.type === 'azimuth') {
+      this.azimuth.write([iso, ev.t, ev.value].join(',') + '\n');
     } else if (ev.type === 'cmd_sent') {
       this.cmds.write([iso, ev.t, 'sent', hex2(ev.cmd), ''].join(',') + '\n');
     } else if (ev.type === 'ack') {
@@ -134,6 +139,8 @@ function handleParsed(evs, t) {
   for (const e of evs) {
     if (e.kind === 'telemetry') publish({ type: 'telemetry', t, data: e.data });
     else if (e.kind === 'payload') publish({ type: 'payload', t, planes: e.planes });
+    else if (e.kind === 'thermal') publish({ type: 'thermal', t, data: e.data });
+    else if (e.kind === 'azimuth') publish({ type: 'azimuth', t, value: e.value });
     else if (e.kind === 'ack') publish({ type: 'ack', t, cmd: e.cmd, status: e.status });
     else if (e.kind === 'console') publish({ type: 'console', t, text: e.text });
   }
@@ -204,7 +211,7 @@ async function startTcpRelay() {
 }
 
 function startSim() {
-  const sim = new GroundSimulator();
+  const sim = new GroundSimulator({ tmPeriodMs: Number(opt('sim-tm-s', 10)) * 1000 });
   sim.on('data', (d) => onRx(new Uint8Array(d)));
   writeToDevice = (b) => {
     sim.write(b);

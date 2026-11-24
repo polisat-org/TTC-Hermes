@@ -1,4 +1,4 @@
-import { store, useNow, type State, type TmPoint } from '../store';
+import { store, useNow, type State } from '../store';
 import { currentMode, hex, modeByCmd, MODES, type ModeId } from '../subsystems';
 import { CMD_STATUS_LABEL } from '../types';
 import { IconAntenna, IconCompass, IconPlane, IconPower, IconSpin } from './Icons';
@@ -18,47 +18,41 @@ const mmss = (ms: number) => {
 };
 const cmdName = (cmd: number) => modeByCmd(cmd)?.name ?? `Custom ${hex(cmd)}`;
 
-/** Desde quando a telemetria está no modo atual (varre o histórico de trás para frente). */
-function modeSince(tm: TmPoint[], mode: ModeId): number | null {
-  let since: number | null = null;
-  for (let i = tm.length - 1; i >= 0; i--) {
-    if (currentMode(tm[i]) !== mode) break;
-    since = tm[i].t;
-  }
-  return since;
-}
-
-/** Linha de detalhe específica de cada modo, a partir da telemetria. */
-function modeDetail(mode: ModeId, s: State, now: number): string {
-  const tm = s.tm[s.tm.length - 1];
-  if (!tm) return '';
+/** Linha de detalhe de cada modo, a partir do que chega do satélite. */
+function modeDetail(mode: ModeId, s: State, now: number, deployed: boolean): string {
   switch (mode) {
     case 'standby':
-      return tm.deploy_state === 2 ? 'Antenna deployed · waiting for a command' : 'Waiting for a command';
+      return deployed ? 'Antenna deployed · waiting for a command' : 'Waiting for a command';
     case 'mission': {
       const active = [...s.tracks.values()].filter((t) => now - t.lastT < 30_000).length;
-      return `${active} aircraft in view · ${s.payloadFrames} position packets received`;
+      const age = s.lastPayloadT === null ? null : (now - s.lastPayloadT) / 1000;
+      return age === null
+        ? 'Waiting for the first aircraft frame (the receiver takes up to 15 s)'
+        : `${active} aircraft in view · last frame ${age.toFixed(0)} s ago`;
     }
     case 'detumbling':
-      return tm.rpm < 5 ? `Stable: ${tm.rpm.toFixed(1)} rpm (target reached)` : `Spinning at ${tm.rpm.toFixed(1)} rpm → target below 5 rpm`;
-    case 'pointing':
-      return tm.pointing_state === 2 && tm.azimuth_str ? `Light source found at ${tm.azimuth_str}°` : 'Searching for the light source…';
+      return 'Reaction wheel on · spin rate is not in the telemetry';
+    case 'pointing': {
+      const az = s.azimuths[s.azimuths.length - 1];
+      return az && now - az.t < 10_000 ? `Light source at ${az.value.toFixed(1)}°` : 'Searching for the light source…';
+    }
     case 'deploy':
-      return 'Releasing the antenna…';
+      return deployed ? 'Antenna deployed' : 'Releasing the antenna… (send the next mode after it opens)';
   }
 }
 
 export function CommandPanel({ s }: { s: State }) {
   const now = useNow(500);
   const tm = s.tm[s.tm.length - 1];
-  const mode = currentMode(tm);
+  const deployed = tm?.deploy_antena === 1;
+  const mode = currentMode(s.commandedMask, deployed);
   const modeInfo = MODES.find((m) => m.id === mode);
-  const since = mode ? modeSince(s.tm, mode) : null;
+  const since = s.commandedT;
   const replay = s.link?.mode === 'replay';
   const canSend = !replay && s.ws === 'open' && !!s.link?.connected;
   const pending = [...s.commands].reverse().find((c) => c.status === undefined);
   const last = s.commands[s.commands.length - 1];
-  const stale = tm ? now - tm.t > 5000 : true;
+  const stale = s.lastFrameT === null || now - s.lastFrameT > 70_000; // 'T' vem a cada 60 s
   const ModeIcon = mode ? ICONS[mode] : IconPower;
 
   const select = (cmd: number, confirmText?: string) => {
@@ -76,14 +70,14 @@ export function CommandPanel({ s }: { s: State }) {
       {/* ---- tela de modo atual ---- */}
       <div className={`mode-screen ${mode ?? 'none'} ${stale ? 'stale' : ''}`}>
         <div className="screen-top">
-          <span>CURRENT MODE</span>
-          <span className={`screen-dot ${stale ? 'off' : 'on'}`}>{tm ? (stale ? 'NO SIGNAL' : 'LIVE') : 'NO DATA'}</span>
+          <span>COMMANDED MODE</span>
+          <span className={`screen-dot ${stale ? 'off' : 'on'}`}>{s.lastFrameT !== null ? (stale ? 'NO SIGNAL' : 'LIVE') : 'NO DATA'}</span>
         </div>
         <div className="screen-main">
           <ModeIcon size={34} />
           <div>
             <div className="screen-mode">{modeInfo ? modeInfo.name.toUpperCase() : '— — —'}</div>
-            <div className="screen-detail">{tm ? modeDetail(mode!, s, now) : 'Waiting for the first telemetry packet'}</div>
+            <div className="screen-detail">{mode ? modeDetail(mode, s, now, deployed) : 'No command confirmed yet: pick a mode below'}</div>
           </div>
         </div>
         <div className="screen-bottom">
@@ -104,18 +98,18 @@ export function CommandPanel({ s }: { s: State }) {
           const Icon = ICONS[m.id];
           const active = mode === m.id;
           const isPending = pending?.cmd === m.cmd;
-          const deployed = m.id === 'deploy' && tm?.deploy_state === 2;
+          const isDeployed = m.id === 'deploy' && deployed;
           return (
             <button
               key={m.id}
               className={`mode-btn ${m.id} ${active ? 'active' : ''} ${isPending ? 'pending' : ''} ${m.confirm ? 'danger' : ''}`}
               onClick={() => select(m.cmd, m.confirm)}
-              disabled={!canSend || active || isPending || deployed}
+              disabled={!canSend || active || isPending || isDeployed}
               title={`${m.blurb} · sends ${hex(m.cmd)}`}
             >
               <Icon size={22} />
               <span className="mode-name">{m.name}</span>
-              <small>{deployed ? 'Already deployed' : active ? 'Active now' : isPending ? 'Sending…' : m.blurb}</small>
+              <small>{isDeployed ? 'Already deployed' : active ? 'Active now' : isPending ? 'Sending…' : m.blurb}</small>
             </button>
           );
         })}
@@ -147,8 +141,9 @@ export function CommandPanel({ s }: { s: State }) {
           </ul>
         )}
         <p className="hint">
-          "Confirmed" means the satellite received the command. The Current mode screen shows what the satellite
-          actually reports in its telemetry.
+          "Confirmed" means the satellite's radio received the command and passed it to the OBC. The OBC telemetry
+          does not report the mode, so the screen shows the last confirmed command. With Deploy, the OBC only
+          deploys: send the next mode afterwards.
         </p>
       </details>
     </section>

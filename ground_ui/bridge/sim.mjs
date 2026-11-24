@@ -1,9 +1,12 @@
-// Simulador do Ground ESP32: gera exatamente os bytes que ground_ttc.ino
-// escreveria na USB ('A', 'T', 'P') e reage aos bytes de comando.
-// Serve para desenvolver/testar a interface sem hardware. Inclui ruído de boot
-// para exercitar a ressincronização do parser.
+// Simulador do Ground ESP32: gera os bytes que ground_ttc.ino escreveria na USB, ou seja, os quadros do OBC
+// real ('T', 'P', 'H', 'Z') e as respostas 'A', e reage aos bytes de comando como o handleTelecommand do OBC.
+// Serve para desenvolver/testar a interface sem hardware. Inclui ruído de boot para exercitar a
+// ressincronização do parser.
+//
+// Cadência (igual ao OBC): 'T' no boot e a cada 60 s (tmPeriodMs), 'P' + 'H' a cada 5 s com a missão ligada,
+// 'Z' a cada 1 s com o apontamento ligado (depois de achar a luz).
 import { EventEmitter } from 'node:events';
-import { encodeAck, encodePayload, encodeTelemetry, CMD_MAX } from './protocol.mjs';
+import { encodeAck, encodeAzimuth, encodePayload, encodeTelemetry, encodeThermal, CMD_MAX } from './protocol.mjs';
 
 // UNSAM, San Martín (Buenos Aires) — local da etapa presencial.
 const SITE = { lat: -34.5776, lon: -58.5196 };
@@ -20,23 +23,21 @@ function destPoint(lat, lon, bearingDeg, distM) {
 }
 
 export class GroundSimulator extends EventEmitter {
-  constructor({ nPlanes = 12, tmPeriodMs = 1000, payloadPeriodMs = 3000 } = {}) {
+  constructor({ nPlanes = 12, tmPeriodMs = 60_000, payloadPeriodMs = 5000 } = {}) {
     super();
     this.t0 = Date.now();
     this.tmPeriodMs = tmPeriodMs;
     this.payloadPeriodMs = payloadPeriodMs;
-    this.mask = 0;
-    this.state = { deploy: 0, detumbling: 0, pointing: 0, mission: 0 };
-    this.counts = { command: 0, telemetry: 0, packet: 0 };
-    this.rate = [0.2, -0.3, 6.28]; // rad/s (~60 rpm em z), cenário de detumbling
-    this.azimuth = null;
+    this.state = { mission: false, deploy: 0, detumbling: false, pointing: false };
+    this.azimuth = null; // último azimute achado ("ddd.d" na telemetria)
+    this.missionStart = null;
     this.planes = Array.from({ length: nPlanes }, (_, i) => {
       const start = destPoint(SITE.lat, SITE.lon, Math.random() * 360, 20e3 + Math.random() * 60e3);
       return {
-        id: 0x4000 + i * 37,
-        type: 1 + (i % 4),
+        icao: 0xe48000 + i * 37,
         heading: Math.random() * 360,
         speed: 180 + Math.random() * 90, // m/s
+        alt: 3000 + Math.random() * 30000, // ft
         turn: (Math.random() - 0.5) * 0.6, // °/s
         ...start,
       };
@@ -46,15 +47,15 @@ export class GroundSimulator extends EventEmitter {
   start() {
     // Mensagens de boot do ROM do ESP32 (texto a 115200 ao abrir a porta).
     this.emitBytes(Buffer.from('ets Jun  8 2016 00:22:57\r\n\r\nrst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)\r\n'));
+    setTimeout(() => this.sendTelemetry(), 500); // o OBC manda a 1ª telemetria no boot
     this.tmTimer = setInterval(() => this.sendTelemetry(), this.tmPeriodMs);
     this.plTimer = setInterval(() => this.sendPayload(), this.payloadPeriodMs);
+    this.azTimer = setInterval(() => this.sendAzimuth(), 1000);
     this.stepTimer = setInterval(() => this.step(0.2), 200);
   }
 
   stop() {
-    clearInterval(this.tmTimer);
-    clearInterval(this.plTimer);
-    clearInterval(this.stepTimer);
+    for (const t of [this.tmTimer, this.plTimer, this.azTimer, this.stepTimer]) clearInterval(t);
   }
 
   emitBytes(b) {
@@ -71,8 +72,8 @@ export class GroundSimulator extends EventEmitter {
   write(bytes) {
     for (const cmd of bytes) {
       if (cmd > CMD_MAX) continue;
-      // Ground espera TX_GUARD + RDT (ACK ou até 6 tentativas de 2.5 s).
-      const fail = Math.random() < 0.08;
+      // Ground espera TX_GUARD + RDT (ACK ou até 6 tentativas de 2,5 s).
+      const fail = Math.random() < 0.05;
       const delay = fail ? 15000 : 400 + Math.random() * 1800;
       setTimeout(() => {
         this.emitBytes(encodeAck(cmd, fail ? 1 : 0));
@@ -81,17 +82,21 @@ export class GroundSimulator extends EventEmitter {
     }
   }
 
+  // Igual ao handleTelecommand do OBC: com o bit Deploy (e antena ainda não aberta) só faz o deploy.
   applyCommand(mask) {
-    this.counts.command++;
-    this.mask = mask;
-    this.state.mission = mask & 1 ? 1 : 0;
     if (mask & 2 && this.state.deploy === 0) {
-      this.state.deploy = 1; // 3 s "deploying", depois travado em 2
+      this.state.deploy = 1;
       setTimeout(() => (this.state.deploy = 2), 3000);
+      return;
     }
-    this.state.detumbling = mask & 4 ? 1 : 0;
-    this.state.pointing = mask & 8 ? 1 : 0;
-    if (this.state.pointing) this.azimuth = null;
+    const mission = !!(mask & 1);
+    if (mission && !this.state.mission) this.missionStart = Date.now();
+    this.state.mission = mission;
+    this.state.detumbling = !!(mask & 4);
+    // detumbling tem prioridade sobre o apontamento
+    const pointing = !!(mask & 8) && !this.state.detumbling;
+    if (pointing && !this.state.pointing) this.pointingSince = Date.now();
+    this.state.pointing = pointing;
   }
 
   step(dt) {
@@ -99,62 +104,71 @@ export class GroundSimulator extends EventEmitter {
       p.heading = (p.heading + p.turn * dt + 360) % 360;
       Object.assign(p, destPoint(p.lat, p.lon, p.heading, p.speed * dt));
     }
-    if (this.state.detumbling) this.rate = this.rate.map((w) => w * Math.exp(-0.12 * dt));
-    if (this.state.pointing && this.azimuth === null && Math.random() < 0.02) {
-      this.azimuth = 180 + Math.random() * 180;
-      this.state.pointing = 2; // encontrado
-    }
   }
 
   sendTelemetry() {
     const now = Date.now() - this.t0;
-    this.counts.telemetry++;
-    if (Math.random() < 0.05) return; // perda simulada (contador avança)
-    const charging = Math.sin(now / 60000) > 0;
-    const azStr = this.azimuth === null ? null : this.azimuth.toFixed(1).padStart(5, '0').slice(0, 5);
-    const reserved = new Array(15).fill(0);
-    if (azStr) for (let i = 0; i < 5; i++) reserved[i] = azStr.charCodeAt(i);
-    const gyroLsb = 16.4 * (180 / Math.PI); // LSB por rad/s (MPU ±2000 °/s, mesmo valor default da UI)
+    const s = Math.floor(now / 1000);
+    const charging = Math.sin(now / 600000) > 0;
+    const noise = (a) => (Math.random() - 0.5) * a;
     const tm = {
-      timestamp_ms: now,
-      uptime_ms: now + 4200,
-      mode: this.state.mission ? 2 : 1,
-      flags: (this.state.deploy ? 1 : 0) | (charging ? 2 : 0),
-      error_count: Math.floor(now / 97000),
-      battery_voltage: 3.9 + 0.15 * Math.sin(now / 45000) + (Math.random() - 0.5) * 0.01,
-      battery_current: (charging ? 0.35 : -0.22) + (Math.random() - 0.5) * 0.03,
-      temperature: 24 + 3 * Math.sin(now / 120000) + (Math.random() - 0.5) * 0.2,
-      gyro: this.rate.map((w) => Math.max(-32768, Math.min(32767, Math.round(w * gyroLsb)))),
-      accel: [12, -40, 16384].map((a) => a + Math.round((Math.random() - 0.5) * 80)),
-      mag: [220, -130, 410].map((m) => m + Math.round((Math.random() - 0.5) * 6)),
-      latitude: SITE.lat,
-      longitude: SITE.lon,
-      altitude: 25,
-      deploy_state: this.state.deploy,
-      detumbling_state: this.state.detumbling,
-      pointing_state: this.state.pointing,
-      mission_state: this.state.mission,
-      command_count: this.counts.command,
-      telemetry_count: this.counts.telemetry,
-      packet_count: this.counts.packet,
-      reserved,
+      // RTC zerado no boot do OBC: hora = tempo desde que ligou
+      hora: Math.floor(s / 3600) % 24, minuto: Math.floor(s / 60) % 60, segundo: s % 60, dia: 1, mes: 1, ano: 0,
+      temperatura_bateria: 6 + 2 * Math.sin(now / 900000) + noise(0.2),
+      temperatura_estrutura: 22 + 3 * Math.sin(now / 1200000) + noise(0.2),
+      umidade: 45 + noise(2),
+      pressao: 1012 + noise(1),
+      deploy_antena: this.state.deploy === 2 ? 1 : 0,
+      tensao_13v8: 12.4 + noise(0.1),
+      tensao_5v: 5.0 + noise(0.04),
+      corrente_13v8: (this.state.detumbling ? 0.9 : 0.25) + noise(0.05),
+      corrente_5v: (this.state.mission ? 0.85 : 0.35) + noise(0.05),
+      status_carregador_1: charging ? 0x48 : 0x40,
+      status_carregador_2: charging ? 0x48 : 0x40,
+      angulo_apontamento: this.azimuth === null ? '' : this.azimuth.toFixed(1).padStart(5, '0'),
+      tensao_bateria_1: Math.round(3900 + 150 * Math.sin(now / 450000) + noise(10)),
+      tensao_bateria_2: Math.round(3880 + 150 * Math.sin(now / 450000) + noise(10)),
+      carga_bateria_1: Math.round(80 + 10 * Math.sin(now / 450000)),
+      carga_bateria_2: Math.round(78 + 10 * Math.sin(now / 450000)),
     };
     this.emitBytes(encodeTelemetry(tm));
   }
 
   sendPayload() {
     if (!this.state.mission) return;
-    this.counts.packet++;
+    const met = Date.now() - (this.missionStart ?? Date.now());
     // Nem toda aeronave é vista em todo ciclo.
-    const seen = this.planes.filter(() => Math.random() > 0.15);
+    const seen = this.planes.filter(() => Math.random() > 0.15).slice(0, 20);
     const planes = seen.map((p) => ({
-      id: p.id,
-      type: p.type,
-      flags: 0x01,
+      icao: p.icao,
       latitude: p.lat,
       longitude: p.lon,
-      confidence: 0.7 + Math.random() * 0.3,
+      altitude_ft: Math.round(p.alt / 25) * 25,
+      velocity_kt: p.speed * 1.94384,
+      track_deg: p.heading,
+      last_pos_met_ms: Math.max(1, met - Math.floor(Math.random() * 2000)),
     }));
     this.emitBytes(encodePayload(planes));
+    const heat = this.state.mission ? 60 : 0;
+    this.emitBytes(
+      encodeThermal({
+        probes_c: [5.5, 6.1, 5.8, 6.4].map((x) => x + (Math.random() - 0.5) * 0.3),
+        duty_pct: [heat, heat],
+        situation: [0, 0],
+        age_s: 0.6,
+        tcs_time_s: (Date.now() - this.t0) / 1000,
+        mission: true,
+        planes: planes.length,
+      }),
+    );
+  }
+
+  sendAzimuth() {
+    if (!this.state.pointing) return;
+    // a busca leva uns 8 s; depois o ADCS manda um valor por segundo
+    if (Date.now() - this.pointingSince < 8000) return;
+    if (this.azimuth === null) this.azimuth = 180 + Math.random() * 180;
+    this.azimuth = (this.azimuth + (Math.random() - 0.5) * 0.4 + 360) % 360;
+    this.emitBytes(encodeAzimuth(this.azimuth));
   }
 }

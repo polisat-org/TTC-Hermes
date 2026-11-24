@@ -33,60 +33,72 @@ function Kpi({
   );
 }
 
-const ok = (x: number | undefined) => x !== undefined && Number.isFinite(x);
+const ok = (x: number | undefined | null): x is number => x !== undefined && x !== null && Number.isFinite(x);
+const ago = (ms: number) => (ms < 90_000 ? `${Math.round(ms / 1000)} s ago` : `${Math.round(ms / 60_000)} min ago`);
 
 export function KpiStrip({ s }: { s: State }) {
   const now = useNow();
   const tm = s.tm[s.tm.length - 1];
-  const total = s.tmReceived + s.tmLost;
-  const loss = total ? (100 * s.tmLost) / total : 0;
+  const th = s.thermal[s.thermal.length - 1];
+  const az = s.azimuths[s.azimuths.length - 1];
   const active = [...s.tracks.values()].filter((t) => now - t.lastT < 30_000).length;
-  const v = tm?.battery_voltage;
-  const i = tm?.battery_current;
-  const temp = tm?.temperature;
-  const rpm = tm?.rpm;
+  const f = s.frames;
+  const total = f.telemetry + f.payload + f.thermal + f.azimuth;
+  const age = s.lastFrameT === null ? null : now - s.lastFrameT;
+  // A TT&C manda 'T' a cada 60 s; na missão chegam 'P'/'H' a cada 5 s.
+  const linkTone: Tone = age === null ? 'idle' : age < 70_000 ? 'ok' : age < 180_000 ? 'warn' : 'bad';
+  // baterias com leitura do MAX17048 (tensão 0 = sem leitura)
+  const bats = tm
+    ? [{ mv: tm.tensao_bateria_1, soc: tm.carga_bateria_1 }, { mv: tm.tensao_bateria_2, soc: tm.carga_bateria_2 }].filter((b) => b.mv > 0)
+    : [];
+  const vbat = bats.length ? Math.min(...bats.map((b) => b.mv)) / 1000 : undefined;
+  const soc = bats.map((b) => b.soc);
+  const probes = th?.probes_c.filter((x): x is number => x !== null) ?? [];
+  // bateria: a sonda mais fria do TCS (o OBC usa a mesma regra) ou a temperatura da telemetria
+  const tbat = probes.length && th && s.lastEventT !== null && (s.lastEventT - th.t) < 15_000 ? Math.min(...probes) : tm?.temperatura_bateria;
+  const azNow = az && now - az.t < 10_000 ? az.value : tm?.azimuth ?? null;
 
   return (
     <section className="kpis">
       <Kpi
         icon={<IconSignal />}
-        label="Link quality"
-        value={total ? `${(100 - loss).toFixed(0)}` : '—'}
-        unit="%"
-        hint={total ? `${s.tmReceived} packets in, ${s.tmLost} lost` : 'No packets yet'}
-        tone={!total ? 'idle' : loss < 5 ? 'ok' : loss < 20 ? 'warn' : 'bad'}
+        label="Downlink"
+        value={total ? String(total) : '—'}
+        unit={total ? 'frames' : undefined}
+        hint={age === null ? 'No frames yet' : `Last frame ${ago(age)} · T ${f.telemetry} · P ${f.payload} · H ${f.thermal} · Z ${f.azimuth}`}
+        tone={linkTone}
       />
       <Kpi
         icon={<IconBattery />}
         label="Battery"
-        value={ok(v) ? v!.toFixed(2) : '—'}
+        value={ok(vbat) ? vbat.toFixed(2) : '—'}
         unit="V"
-        hint={ok(i) ? (i! > 0.02 ? `Charging · ${(i! * 1000).toFixed(0)} mA` : i! < -0.02 ? `Discharging · ${(-i! * 1000).toFixed(0)} mA` : 'Idle') : 'Waiting for telemetry'}
-        tone={!ok(v) ? 'idle' : v! >= 3.6 ? 'ok' : v! >= 3.4 ? 'warn' : 'bad'}
+        hint={ok(vbat) ? `Charge ${soc.join(' / ')} % · lowest cell` : tm ? 'No fuel gauge reading (EPS)' : 'Waiting for telemetry'}
+        tone={!ok(vbat) ? 'idle' : vbat >= 3.6 ? 'ok' : vbat >= 3.4 ? 'warn' : 'bad'}
       />
       <Kpi
         icon={<IconThermo />}
-        label="Temperature"
-        value={ok(temp) ? temp!.toFixed(1) : '—'}
+        label="Battery temp."
+        value={ok(tbat) ? tbat.toFixed(1) : '—'}
         unit="°C"
-        hint="Battery must stay above 0 °C"
-        tone={!ok(temp) ? 'idle' : temp! > 0 && temp! < 50 ? 'ok' : 'bad'}
+        hint="Must stay above 0 °C"
+        tone={!ok(tbat) ? 'idle' : tbat > 0 && tbat < 50 ? 'ok' : 'bad'}
       />
       <Kpi
         icon={<IconSpin />}
-        label="Spin rate"
-        value={ok(rpm) ? rpm!.toFixed(1) : '—'}
-        unit="rpm"
-        hint={ok(rpm) ? (rpm! < 5 ? 'Stable · below 5 rpm target' : 'Tumbling · target < 5 rpm') : 'Target: below 5 rpm'}
-        tone={!ok(rpm) ? 'idle' : rpm! < 5 ? 'ok' : 'warn'}
+        label="Heaters"
+        value={th ? `${th.duty_pct[0]} / ${th.duty_pct[1]}` : '—'}
+        unit={th ? '%' : undefined}
+        hint={th ? (th.valid ? `Thermal control · ${probes.length}/4 probes` : 'Thermal control: no valid data') : 'Arrives with the mission (H)'}
+        tone={!th ? 'idle' : th.valid && !th.situation[0] && !th.situation[1] ? 'ok' : 'warn'}
       />
       <Kpi
         icon={<IconCompass />}
         label="Light azimuth"
-        value={tm?.azimuth_str ?? '—'}
-        unit={tm?.azimuth_str ? '°' : undefined}
-        hint={tm?.azimuth_str ? 'Reported by the ADCS' : 'Turn on Light Pointing'}
-        tone={tm?.azimuth_str ? 'ok' : 'idle'}
+        value={azNow !== null ? azNow.toFixed(1) : '—'}
+        unit={azNow !== null ? '°' : undefined}
+        hint={az && now - az.t < 10_000 ? 'Live from the ADCS (Z)' : azNow !== null ? 'Last value in telemetry' : 'Turn on Light Pointing'}
+        tone={azNow !== null ? 'ok' : 'idle'}
       />
       <Kpi
         icon={<IconPlane />}

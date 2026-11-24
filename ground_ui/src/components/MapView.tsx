@@ -63,14 +63,11 @@ export function MapView({ s, selected, onSelect }: { s: State; selected: number 
   const [base, setBase] = useState<'dark' | 'osm' | 'none'>('dark');
   const [projMin, setProjMin] = useState(5);
   const [onlyActive, setOnlyActive] = useState(false);
-  const tm = s.tm[s.tm.length - 1];
-  const sat: [number, number] | null =
-    tm && Number.isFinite(tm.latitude) && Number.isFinite(tm.longitude) && !(tm.latitude === 0 && tm.longitude === 0)
-      ? [tm.latitude, tm.longitude]
-      : null;
+  // A telemetria do OBC não tem a posição do satélite (fica parado no local da prova).
+  const sat: [number, number] | null = null;
 
   const tracks = useMemo(
-    () => [...s.tracks.values()].filter((t) => !onlyActive || now - t.lastT < STALE_MS),
+    () => [...s.tracks.values()].filter((t) => t.points.length > 0 && (!onlyActive || now - t.lastT < STALE_MS)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [s.tracks, s.tracks.size, onlyActive, now, s.payloadFrames],
   );
@@ -122,7 +119,7 @@ export function MapView({ s, selected, onSelect }: { s: State; selected: number 
           const last = pos[pos.length - 1];
           const proj =
             projMin && t.speed && t.heading !== null && !stale
-              ? destination(last[0], last[1], t.heading, t.speed * projMin * 60)
+              ? destination(last[0], last[1], t.heading, t.speed * 0.514444 * projMin * 60) // kt -> m/s
               : null;
           return (
             <Fragment key={t.id}>
@@ -143,7 +140,8 @@ export function MapView({ s, selected, onSelect }: { s: State; selected: number 
               >
                 <Tooltip permanent={sel} direction="top" offset={[0, -6]}>
                   {hexId(t.id)}
-                  {t.speed !== null && ` · ${(t.speed * 1.94384).toFixed(0)} kt`}
+                  {t.altitude !== null && ` · ${Math.round(t.altitude)} ft`}
+                  {t.speed !== null && ` · ${t.speed.toFixed(0)} kt`}
                   {t.heading !== null && ` · ${t.heading.toFixed(0)}°`}
                 </Tooltip>
               </CircleMarker>
@@ -179,13 +177,10 @@ export function MapView({ s, selected, onSelect }: { s: State; selected: number 
         <span>
           <i className="lg-origin" /> first seen
         </span>
-        <span>
-          <i className="lg-sat" /> Hermes CubeSat
-        </span>
         <span className="muted">Click an aircraft for details. Times are ground arrival times.</span>
       </div>
     </section>
   );
 }
 
-export const hexId = (id: number) => id.toString(16).toUpperCase().padStart(4, '0');
+export const hexId = (id: number) => id.toString(16).toUpperCase().padStart(6, '0'); // ICAO 24 bits

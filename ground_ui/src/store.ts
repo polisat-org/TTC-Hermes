@@ -1,32 +1,30 @@
 import { useSyncExternalStore } from 'react';
-import { bearing, haversine } from './geo';
-import type { BridgeEvent, BridgeMessage, LinkInfo, ParserStats, Plane, Telemetry } from './types';
-
-// Escala do giroscópio (LSB por °/s). NÃO está definida no firmware/OBC:
-// confirme com o OBC/ADCS. 16.4 = MPU-6050/9250 em ±2000 °/s (necessário para 60 rpm = 360 °/s).
-export const GYRO_LSB_PER_DPS = 16.4;
+import type { BridgeEvent, BridgeMessage, LinkInfo, ParserStats, Plane, Telemetry, Thermal } from './types';
 
 export interface TmPoint extends Telemetry {
   t: number; // horário de chegada no PC (ms epoch)
-  rpm: number; // |ω| em rpm, usando GYRO_LSB_PER_DPS
+}
+
+export interface ThermalPoint extends Thermal {
+  t: number;
 }
 
 export interface TrackPoint {
-  t: number; // chegada no PC — Plane_t ainda não tem timestamp próprio
+  t: number; // chegada no PC
   lat: number;
   lon: number;
-  confidence: number;
+  alt: number; // ft (NaN = sem altitude)
 }
 
 export interface Track {
-  id: number;
-  type: number;
-  flags: number;
+  id: number; // ICAO 24 bits
   points: TrackPoint[];
   firstT: number;
   lastT: number;
-  speed: number | null; // m/s, derivado no solo
-  heading: number | null; // graus, derivado no solo
+  altitude: number | null; // ft
+  speed: number | null; // kt (ADS-B)
+  heading: number | null; // graus (ADS-B)
+  lastPosMet: number; // last_pos_met_ms da última posição guardada
 }
 
 export interface CommandRecord {
@@ -41,21 +39,26 @@ export interface State {
   link: LinkInfo | null;
   parser: ParserStats | null;
   tm: TmPoint[];
+  thermal: ThermalPoint[];
+  azimuths: { t: number; value: number }[];
   tracks: Map<number, Track>;
   payloadFrames: number;
   lastPayloadT: number | null;
   commands: CommandRecord[];
+  // A telemetria do OBC não diz o modo: vale o último telecomando confirmado pelo ground.
+  commandedMask: number | null;
+  commandedT: number | null;
   console: { t: number; text: string }[];
   errors: { t: number; text: string }[];
-  // Métricas de enlace (HLR-ADS-08: perda e latência)
-  tmLost: number; // lacunas em telemetry_count
-  tmReceived: number;
-  minDelayOffset: number | null; // min(t_pc - timestamp_ms): base para latência relativa
+  frames: { telemetry: number; payload: number; thermal: number; azimuth: number };
+  lastFrameT: number | null; // último quadro do satélite (qualquer tipo)
   missionStart: number | null;
   lastEventT: number | null; // tempo do último evento (relógio do replay)
 }
 
-const MAX_TM = 36_000; // 10 h a 1 Hz
+const MAX_TM = 6_000; // 100 h a 1/min
+const MAX_THERMAL = 20_000; // ~28 h a 1/5 s
+const MAX_AZ = 20_000;
 const MAX_POINTS_PER_TRACK = 5_000;
 
 function emptyState(): State {
@@ -64,15 +67,18 @@ function emptyState(): State {
     link: null,
     parser: null,
     tm: [],
+    thermal: [],
+    azimuths: [],
     tracks: new Map(),
     payloadFrames: 0,
     lastPayloadT: null,
     commands: [],
+    commandedMask: null,
+    commandedT: null,
     console: [],
     errors: [],
-    tmLost: 0,
-    tmReceived: 0,
-    minDelayOffset: null,
+    frames: { telemetry: 0, payload: 0, thermal: 0, azimuth: 0 },
+    lastFrameT: null,
     missionStart: null,
     lastEventT: null,
   };
@@ -169,28 +175,30 @@ class Store {
     const s = this.state;
     s.lastEventT = ev.t;
     switch (ev.type) {
-      case 'telemetry': {
-        const d = ev.data;
-        const prev = s.tm[s.tm.length - 1];
-        if (prev) {
-          const delta = (d.telemetry_count - prev.telemetry_count + 0x10000) & 0xffff;
-          // delta grande/zero = reboot do OBC ou contador parado; não conta como perda
-          if (delta > 1 && delta < 1000) s.tmLost += delta - 1;
-        }
-        s.tmReceived++;
-        const off = ev.t - d.timestamp_ms;
-        if (s.minDelayOffset === null || off < s.minDelayOffset || (prev && d.timestamp_ms < prev.timestamp_ms)) {
-          s.minDelayOffset = off; // também reinicia a base se o OBC rebootar
-        }
-        const w = Math.hypot(...d.gyro) / GYRO_LSB_PER_DPS; // °/s
-        s.tm.push({ ...d, t: ev.t, rpm: w / 6 });
+      case 'telemetry':
+        s.frames.telemetry++;
+        s.lastFrameT = ev.t;
+        s.tm.push({ ...ev.data, t: ev.t });
         if (s.tm.length > MAX_TM) s.tm.splice(0, s.tm.length - MAX_TM);
         break;
-      }
       case 'payload':
+        s.frames.payload++;
+        s.lastFrameT = ev.t;
         s.payloadFrames++;
         s.lastPayloadT = ev.t;
         for (const p of ev.planes) this.addPlane(p, ev.t);
+        break;
+      case 'thermal':
+        s.frames.thermal++;
+        s.lastFrameT = ev.t;
+        s.thermal.push({ ...ev.data, t: ev.t });
+        if (s.thermal.length > MAX_THERMAL) s.thermal.splice(0, s.thermal.length - MAX_THERMAL);
+        break;
+      case 'azimuth':
+        s.frames.azimuth++;
+        s.lastFrameT = ev.t;
+        s.azimuths.push({ t: ev.t, value: ev.value });
+        if (s.azimuths.length > MAX_AZ) s.azimuths.splice(0, s.azimuths.length - MAX_AZ);
         break;
       case 'cmd_sent':
         s.commands.push({ cmd: ev.cmd, sentT: ev.t });
@@ -202,7 +210,11 @@ class Store {
           rec.ackT = ev.t;
           rec.status = ev.status;
         } else s.commands.push({ cmd: ev.cmd, sentT: ev.t, ackT: ev.t, status: ev.status });
-        if (ev.status === 0 && ev.cmd & 1 && s.missionStart === null) s.missionStart = ev.t;
+        if (ev.status === 0) {
+          s.commandedMask = ev.cmd;
+          s.commandedT = ev.t;
+          if (ev.cmd & 1 && s.missionStart === null) s.missionStart = ev.t;
+        }
         break;
       }
       case 'console':
@@ -213,29 +225,21 @@ class Store {
   }
 
   private addPlane(p: Plane, t: number) {
-    if (!Number.isFinite(p.latitude) || !Number.isFinite(p.longitude)) return;
-    let tr = this.state.tracks.get(p.id);
+    let tr = this.state.tracks.get(p.icao);
     if (!tr) {
-      tr = { id: p.id, type: p.type, flags: p.flags, points: [], firstT: t, lastT: t, speed: null, heading: null };
-      this.state.tracks.set(p.id, tr);
+      tr = { id: p.icao, points: [], firstT: t, lastT: t, altitude: null, speed: null, heading: null, lastPosMet: 0 };
+      this.state.tracks.set(p.icao, tr);
     }
-    tr.type = p.type;
-    tr.flags = p.flags;
     tr.lastT = t;
-    tr.points.push({ t, lat: p.latitude, lon: p.longitude, confidence: p.confidence });
+    if (Number.isFinite(p.altitude_ft)) tr.altitude = p.altitude_ft;
+    if (Number.isFinite(p.velocity_kt)) tr.speed = p.velocity_kt;
+    if (Number.isFinite(p.track_deg)) tr.heading = p.track_deg;
+    // só guarda posição nova (o payload repete a última posição enquanto não chega outra)
+    if (!Number.isFinite(p.latitude) || !Number.isFinite(p.longitude) || p.last_pos_met_ms === 0) return;
+    if (p.last_pos_met_ms === tr.lastPosMet && tr.points.length) return;
+    tr.lastPosMet = p.last_pos_met_ms;
+    tr.points.push({ t, lat: p.latitude, lon: p.longitude, alt: p.altitude_ft });
     if (tr.points.length > MAX_POINTS_PER_TRACK) tr.points.shift();
-    // velocidade/rumo derivados no solo a partir de pontos com >= 2 s de separação
-    const last = tr.points[tr.points.length - 1];
-    for (let i = tr.points.length - 2; i >= 0; i--) {
-      const q = tr.points[i];
-      const dt = (last.t - q.t) / 1000;
-      if (dt >= 2) {
-        const dist = haversine(q.lat, q.lon, last.lat, last.lon);
-        tr.speed = dist / dt;
-        tr.heading = dist > 1 ? bearing(q.lat, q.lon, last.lat, last.lon) : tr.heading;
-        break;
-      }
-    }
   }
 }
 

@@ -8,12 +8,12 @@ const mmss = (ms: number) => {
 };
 
 export function linkSummary(s: State, now: number) {
-  const tm = s.tm[s.tm.length - 1];
-  const age = tm ? (now - tm.t) / 1000 : null;
+  const age = s.lastFrameT === null ? null : (now - s.lastFrameT) / 1000;
   if (s.ws !== 'open') return { tone: 'bad', title: 'Dashboard offline', detail: 'Start the bridge (npm run bridge)' };
   if (!s.link?.connected) return { tone: 'bad', title: 'Ground station disconnected', detail: s.link?.error ?? 'Plug in the ESP32' };
-  if (age === null) return { tone: 'warn', title: 'Waiting for the satellite', detail: 'Connected, no telemetry yet' };
-  if (age > 5) return { tone: 'warn', title: 'Signal lost', detail: `Last data ${age.toFixed(0)} s ago` };
+  if (age === null) return { tone: 'warn', title: 'Waiting for the satellite', detail: 'Connected, no frames yet (telemetry every 60 s)' };
+  // telemetria a cada 60 s: só é perda depois de faltar mais de um quadro
+  if (age > 70) return { tone: 'warn', title: 'Signal lost', detail: `Last data ${age.toFixed(0)} s ago` };
   return { tone: 'ok', title: 'Receiving data', detail: `Last packet ${age.toFixed(1)} s ago` };
 }
 

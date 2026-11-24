@@ -3,9 +3,8 @@ import { store, useNow, type State, type Track } from '../store';
 import { hexId } from './MapView';
 
 function exportCsv(tracks: Track[]) {
-  const rows = ['pc_time_iso,pc_time_ms,id_hex,type,flags,latitude,longitude,confidence'];
-  for (const t of tracks)
-    for (const p of t.points) rows.push([new Date(p.t).toISOString(), p.t, hexId(t.id), t.type, t.flags, p.lat, p.lon, p.confidence].join(','));
+  const rows = ['pc_time_iso,pc_time_ms,icao_hex,latitude,longitude,altitude_ft'];
+  for (const t of tracks) for (const p of t.points) rows.push([new Date(p.t).toISOString(), p.t, hexId(t.id), p.lat, p.lon, p.alt].join(','));
   const url = URL.createObjectURL(new Blob([rows.join('\n')], { type: 'text/csv' }));
   const a = Object.assign(document.createElement('a'), { href: url, download: `aircraft-tracks-${new Date().toISOString().slice(0, 19)}.csv` });
   a.click();
@@ -36,7 +35,8 @@ export function AircraftTable({ s, selected, onSelect }: { s: State; selected: n
           <thead>
             <tr>
               <th />
-              <th>ID</th>
+              <th>ICAO</th>
+              <th>Alt.</th>
               <th>Speed</th>
               <th>Heading</th>
               <th>Points</th>
@@ -58,7 +58,8 @@ export function AircraftTable({ s, selected, onSelect }: { s: State; selected: n
                   <td>
                     <code>{hexId(t.id)}</code>
                   </td>
-                  <td>{t.speed === null ? '—' : `${(t.speed * 1.94384).toFixed(0)} kt`}</td>
+                  <td>{t.altitude === null ? '—' : `${Math.round(t.altitude)} ft`}</td>
+                  <td>{t.speed === null ? '—' : `${t.speed.toFixed(0)} kt`}</td>
                   <td>{t.heading === null ? '—' : <Arrow deg={t.heading} />}</td>
                   <td>{t.points.length}</td>
                   <td className={age < 5 ? 'ok' : ''}>{age < 5 ? 'now' : `${age.toFixed(0)} s ago`}</td>
@@ -80,21 +81,19 @@ export function AircraftTable({ s, selected, onSelect }: { s: State; selected: n
           </div>
           <div className="detail-grid">
             <span>Position</span>
-            <b>
-              {sel.points[sel.points.length - 1].lat.toFixed(4)}, {sel.points[sel.points.length - 1].lon.toFixed(4)}
-            </b>
+            <b>{sel.points.length ? `${sel.points[sel.points.length - 1].lat.toFixed(4)}, ${sel.points[sel.points.length - 1].lon.toFixed(4)}` : 'no position yet'}</b>
             <span>First seen at</span>
+            <b>{sel.points.length ? `${sel.points[0].lat.toFixed(4)}, ${sel.points[0].lon.toFixed(4)}` : '—'}</b>
+            <span>Altitude</span>
+            <b>{sel.altitude === null ? '—' : `${Math.round(sel.altitude)} ft`}</b>
+            <span>Speed / track</span>
             <b>
-              {sel.points[0].lat.toFixed(4)}, {sel.points[0].lon.toFixed(4)}
+              {sel.speed === null ? '—' : `${sel.speed.toFixed(0)} kt`} / {sel.heading === null ? '—' : `${sel.heading.toFixed(0)}°`}
             </b>
             <span>Tracked for</span>
             <b>{((sel.lastT - sel.firstT) / 1000).toFixed(0)} s</b>
-            <span>Signal confidence</span>
-            <b>{(sel.points[sel.points.length - 1].confidence * 100).toFixed(0)} %</b>
-            <span>Type / flags</span>
-            <b>
-              {sel.type} / <code>{sel.flags.toString(2).padStart(8, '0')}</code>
-            </b>
+            <span>Position at mission time</span>
+            <b>{sel.lastPosMet ? `${(sel.lastPosMet / 1000).toFixed(1)} s` : '—'}</b>
           </div>
         </div>
       )}

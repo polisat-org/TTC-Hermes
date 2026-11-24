@@ -34,18 +34,35 @@ Opções: `--http <porta>` (padrão 8765), `--baud` (115200), `--logs <dir>`, `-
 
 Testes do parser: `npm test`.
 
+## Quadros que chegam (os do OBC real)
+
+O `ground_ttc.ino` repassa à USB cada quadro do OBC exatamente como saiu dele (`common/telemetry.h`):
+
+| Quadro | Tamanho | Quando | Conteúdo |
+|---|---|---|---|
+| `'T'` | 1 + 85 B | no boot do OBC e a cada 60 s | `Telemetry_t`: relógio, temperaturas, umidade/pressão, deploy, EPS (barramentos, carregadores, baterias), último azimute |
+| `'P'` | 2 + 28n B | a cada 5 s com a missão ligada | até 20 aviões (`PlaneDown_t`: ICAO, lat, lon, altitude, velocidade, rumo, tempo da posição) |
+| `'H'` | 1 + 32 B | junto com o `'P'` | controle térmico do payload (4 sondas, aquecedores, situação, CRC) |
+| `'Z'` | 1 + 5 B | até 1 por segundo no apontamento | azimute do ADCS, `"ddd.d"` |
+| `'A'` | 3 B | resposta a cada telecomando | `'A'` cmd status (OK / FALHA / OCUPADO) |
+
+A telemetria do OBC **não informa o modo** (não há `*_state` no `Telemetry_t`): a tela mostra o último
+telecomando confirmado e o que dá para ver nos dados (antena aberta, aviões chegando, azimutes chegando).
+No simulador (`npm run sim`) a telemetria vem a cada 10 s para não esperar (`--sim-tm-s <s>` muda isso).
+
 ## O que tem na tela
 
-- **Telecomando:** os 4 bits (Mission, Deploy, Detumbling, Pointing) formam o byte `0x00–0x0F`. O comando é um
-  *vetor de estado*: cada envio define os 4 bits. Deploy pede confirmação. O histórico mostra o status `'A'`
-  (OK/FALHA/OCUPADO) e o RTT. "OK" significa ACK do ESP32 do CubeSat. A execução é confirmada pelos estados e pelo
-  `command_count` na telemetria.
-- **Estado do CubeSat:** `*_state`, bateria, temperatura, rotação em rpm, azimute, contadores, idade da última TM.
-- **Enlace:** perda de TM (lacunas em `telemetry_count`), latência relativa, estatísticas do parser e pasta do log.
-- **Mapa:** trilha por aeronave, origem observada, projeção tracejada pelo rumo e posição do CubeSat. Fundo
-  OpenStreetMap (precisa de internet) ou **grade lat/lon offline**.
-- **Aeronaves:** tabela com velocidade/rumo derivados no solo, nº de pontos, confiança, idade e export CSV.
-- **Gráficos:** tensão, corrente, temperatura e rpm, com linhas de referência das regras (< 5 rpm, bateria > 0 °C).
+- **Telecomando:** cinco modos (Standby, Mission, Detumbling, Pointing, Deploy), um por vez, com o byte
+  `0x00–0x0F`. Deploy pede confirmação; com o bit Deploy o OBC **só** faz o deploy, então mande o próximo modo
+  depois. O histórico mostra o status `'A'` e o RTT. "OK" significa que o rádio do CubeSat recebeu e repassou ao OBC.
+- **Indicadores:** quadros recebidos por tipo e idade do último, bateria (MAX17048, a célula mais baixa) e carga,
+  temperatura da bateria (sonda mais fria do TCS; sem `'H'` recente, a da telemetria), aquecedores, azimute e aviões.
+- **Mapa:** trilha por aeronave (ICAO), origem observada e projeção tracejada pelo rumo e velocidade do ADS-B.
+  Fundo OpenStreetMap (precisa de internet) ou **grade lat/lon offline**.
+- **Aeronaves:** tabela com ICAO, altitude, velocidade e rumo (do ADS-B), nº de pontos, idade e export CSV.
+- **Gráficos:** temperatura da bateria pelo TCS (5 s), temperatura e tensão da bateria e barramento de 13,8 V
+  (housekeeping, 60 s), com a referência da regra (bateria > 0 °C).
+- **Avançado:** relógio do OBC, EPS completo, registradores dos carregadores, dados do TCS, `Telemetry_t` cru e console.
 - **Relógio de missão (10:00):** inicia sozinho no primeiro ACK OK com o bit Mission ou manualmente.
 
 ## Logs (HLR-SW-02)
@@ -55,15 +72,17 @@ Cada execução ao vivo cria `logs/<data-hora>/`:
 | Arquivo | Conteúdo |
 |---|---|
 | `raw.jsonl` | todos os bytes RX/TX com horário do PC (fonte para `--replay`) |
-| `events.jsonl` | eventos decodificados (telemetria, payload, ack, comandos, console) |
+| `events.jsonl` | eventos decodificados (telemetria, aviões, térmico, azimute, ack, comandos, console) |
 | `telemetry.csv` | um `Telemetry_t` por linha |
 | `planes.csv` | uma aeronave por linha, com índice do quadro `'P'` |
+| `thermal.csv` | um quadro `'H'` (TCS) por linha |
+| `azimuth.csv` | um azimute `'Z'` por linha |
 | `commands.csv` | comandos enviados e respostas `'A'` |
 | `session.json` | modo, porta e horário de início |
 
 ## Mudou o firmware?
 
-Toda a decodificação de bytes está em **`bridge/protocol.mjs`** (`decodeTelemetry`, `decodePlane`, `StreamParser`),
-espelhando `common/telemetry.h`. Se `Telemetry_t`/`Plane_t` mudarem, ajuste ali, em `src/types.ts` e no
-simulador (`bridge/sim.mjs`). A escala do giroscópio usada para rpm é `GYRO_LSB_PER_DPS` em `src/store.ts`
-(assumida 16.4, a confirmar com o ADCS). Ver `../docs/analise_ttc.md` para as mudanças propostas.
+Toda a decodificação de bytes está em **`bridge/protocol.mjs`** (`TELEMETRY_FIELDS`, `decodePlane`,
+`decodeThermal`, `StreamParser`), espelhando `customTypes.h` do OBC e `common/telemetry.h`. Se um struct mudar,
+ajuste ali, em `src/types.ts` e no simulador (`bridge/sim.mjs`). O teste de integração do repositório
+Hermes-Integracao (`checks/run_all.sh`) passa os quadros reais do OBC por este parser.
