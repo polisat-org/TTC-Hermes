@@ -8,11 +8,12 @@
 #include "../common/rdt3.h"
 #include "../common/obc_frames.h"
 
+// E32 na UART2 (RX2/TX2), igual ao CubeSat. RX0/TX0 ficam livres para a USB do PC. Ver firmware/README.md.
 #define E32_RX_PIN 16
 #define E32_TX_PIN 17
-#define E32_M0_PIN 21
-#define E32_M1_PIN 22
-#define E32_AUX_PIN 18
+#define E32_M0_PIN 18
+#define E32_M1_PIN 5
+#define E32_AUX_PIN 15
 #define E32_BAUD 9600
 #define E32_TX_POWER E32_POWER_20DBM
 

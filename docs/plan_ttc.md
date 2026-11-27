@@ -137,15 +137,15 @@ Um byte de comando `0x00` a `0x0F`.
 
 | Sinal | GPIO |
 |---|---:|
-| E32 RX | 16 |
-| E32 TX | 17 |
-| E32 M0 | 21 |
-| E32 M1 | 22 |
-| E32 AUX | 18 |
-| OBC RX | 25 |
-| OBC TX | 26 |
-| TTC_BUSY | 27 |
-| LED | 13 |
+| E32 RX | 16 (RX2) |
+| E32 TX | 17 (TX2) |
+| E32 M0 | 18 |
+| E32 M1 | 5 |
+| E32 AUX | 15 |
+| OBC RX | 3 (RX0) |
+| OBC TX | 1 (TX0) |
+| TTC_BUSY | 13 |
+| LED | 2 |
 
 ## 8. TTC_BUSY
 

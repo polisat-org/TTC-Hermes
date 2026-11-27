@@ -1,6 +1,7 @@
+import { useEffect } from 'react';
 import { store, useNow, type State } from '../store';
+import { uiFeatures } from '../ui';
 
-const MISSION_MS = 10 * 60 * 1000; // HLR-ADS-05: 10 continuous minutes
 
 const mmss = (ms: number) => {
   const t = Math.max(0, Math.floor(ms / 1000));
@@ -19,8 +20,16 @@ export function linkSummary(s: State, now: number) {
 
 export function TopBar({ s }: { s: State }) {
   const now = useNow(500);
-  const elapsed = s.missionStart !== null ? now - s.missionStart : 0;
+  const ui = uiFeatures(s.link);
+  const MISSION_MS = ui.missionMs; // full: 10 min (HLR-ADS-05) · mission: 16 min
+  const raw = s.missionStart !== null ? now - s.missionStart : 0;
+  const elapsed = ui.startCommands ? Math.min(raw, MISSION_MS) : raw;
   const pct = Math.min(100, (100 * elapsed) / MISSION_MS);
+  const running = ui.startCommands && s.missionStart !== null && !s.missionDone;
+  const canSend = s.ws === 'open' && !!s.link?.connected;
+  useEffect(() => {
+    if (running && raw >= MISSION_MS) store.finishMission(); // fim da janela: manda 0x00
+  }, [running, raw, MISSION_MS]);
   const link = linkSummary(s, now);
   const mode = s.link?.mode;
 
@@ -44,10 +53,14 @@ export function TopBar({ s }: { s: State }) {
         <div className="clock-row">
           <span className="clock-label">Mission time</span>
           <span className="clock">{s.missionStart === null ? '--:--' : mmss(elapsed)}</span>
-          <span className="clock-total">/ 10:00</span>
+          <span className="clock-total">/ {mmss(MISSION_MS)}</span>
           {s.missionStart === null ? (
-            <button className="ghost" onClick={() => store.startMission()}>
+            <button className="ghost" onClick={() => store.startMission()} disabled={ui.startCommands && !canSend}>
               Start
+            </button>
+          ) : running ? (
+            <button className="ghost" disabled>
+              Running
             </button>
           ) : (
             <button className="ghost" onClick={() => store.resetMission()}>
@@ -55,7 +68,7 @@ export function TopBar({ s }: { s: State }) {
             </button>
           )}
         </div>
-        <div className="progress" title="The rules require 10 continuous minutes of mission">
+        <div className="progress" title={ui.startCommands ? `Mission window: ${MISSION_MS / 60000} continuous minutes` : 'The rules require 10 continuous minutes of mission'}>
           <div className={`bar ${pct >= 100 ? 'done' : ''}`} style={{ width: `${pct}%` }} />
         </div>
       </div>

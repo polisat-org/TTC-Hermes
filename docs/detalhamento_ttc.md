@@ -10,19 +10,21 @@ O OBC continua responsável pelas prioridades de missão. O ESP32 do CubeSat ape
 
 ## 2. Pinagem e conexões
 
+> **Atenção:** nos dois ESP32 o E32 fica na UART2 (RX2/TX2 = 16/17). RX0/TX0 não são usados pelo LoRa: no ground são a USB do PC, no CubeSat são o canal exclusivo TT&C/OBC (UART do OBC: RX0 = GPIO3, TX0 = GPIO1). Ver [`firmware/README.md`](../firmware/README.md#pinagem-do-e32-cubesat-e-ground).
+
 ### 2.1 CubeSat
 
 | Sinal ESP32 | GPIO | Direção | Conecta em |
 |---|---:|---|---|
-| `E32_RX_PIN` | 16 | entrada | TX do E32 |
-| `E32_TX_PIN` | 17 | saída | RX do E32 |
-| `E32_M0_PIN` | 21 | saída | M0 do E32 |
-| `E32_M1_PIN` | 22 | saída | M1 do E32 |
-| `E32_AUX_PIN` | 18 | entrada | AUX do E32 |
-| `OBC_RX_PIN` | 25 | entrada | TX do OBC |
-| `OBC_TX_PIN` | 26 | saída | RX do OBC |
-| `TTC_BUSY_PIN` | 27 | saída | entrada de busy do OBC |
-| `STATUS_LED_PIN` | 13 | saída | LED |
+| `E32_RX_PIN` | 16 (RX2) | entrada | TX do E32 |
+| `E32_TX_PIN` | 17 (TX2) | saída | RX do E32 |
+| `E32_M0_PIN` | 18 | saída | M0 do E32 |
+| `E32_M1_PIN` | 5 | saída | M1 do E32 |
+| `E32_AUX_PIN` | 15 | entrada | AUX do E32 |
+| `OBC_RX_PIN` | 3 (RX0) | entrada | TX do OBC |
+| `OBC_TX_PIN` | 1 (TX0) | saída | RX do OBC |
+| `TTC_BUSY_PIN` | 13 | saída | J2-10 do barramento → PC0 do OBC |
+| `STATUS_LED_PIN` | 2 | saída | LED azul da DevKit |
 
 ### 2.2 Ground
 
@@ -30,9 +32,9 @@ O OBC continua responsável pelas prioridades de missão. O ESP32 do CubeSat ape
 |---|---:|---|---|
 | `E32_RX_PIN` | 16 | entrada | TX do E32 |
 | `E32_TX_PIN` | 17 | saída | RX do E32 |
-| `E32_M0_PIN` | 21 | saída | M0 do E32 |
-| `E32_M1_PIN` | 22 | saída | M1 do E32 |
-| `E32_AUX_PIN` | 18 | entrada | AUX do E32 |
+| `E32_M0_PIN` | 18 | saída | M0 do E32 |
+| `E32_M1_PIN` | 5 | saída | M1 do E32 |
+| `E32_AUX_PIN` | 15 | entrada | AUX do E32 |
 | `STATUS_LED_PIN` | 13 | saída | LED |
 | USB | — | bidirecional | PC |
 

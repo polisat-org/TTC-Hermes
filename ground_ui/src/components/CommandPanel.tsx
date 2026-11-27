@@ -1,6 +1,7 @@
 import { store, useNow, type State } from '../store';
 import { currentMode, hex, modeByCmd, MODES, type ModeId } from '../subsystems';
 import { CMD_STATUS_LABEL } from '../types';
+import { uiFeatures } from '../ui';
 import { IconAntenna, IconCompass, IconPlane, IconPower, IconSpin } from './Icons';
 
 const ICONS: Record<ModeId, (p: { size?: number }) => JSX.Element> = {
@@ -45,7 +46,9 @@ export function CommandPanel({ s }: { s: State }) {
   const now = useNow(500);
   const tm = s.tm[s.tm.length - 1];
   const deployed = tm?.deploy_antena === 1;
-  const mode = currentMode(s.commandedMask, deployed);
+  const ui = uiFeatures(s.link);
+  // Variante mission: a tela mostra Mission desde o início (é o único modo desta interface).
+  const mode = currentMode(s.commandedMask, deployed) ?? (ui.modeSelect ? null : 'mission');
   const modeInfo = MODES.find((m) => m.id === mode);
   const since = s.commandedT;
   const replay = s.link?.mode === 'replay';
@@ -55,7 +58,9 @@ export function CommandPanel({ s }: { s: State }) {
   const stale = s.lastFrameT === null || now - s.lastFrameT > 70_000; // 'T' vem a cada 60 s
   const ModeIcon = mode ? ICONS[mode] : IconPower;
 
+  const running = s.missionStart !== null && !s.missionDone;
   const select = (cmd: number, confirmText?: string) => {
+    if (!ui.modeSelect) return store.startMission(); // mission: o botão faz o mesmo que o Start
     if (confirmText && !confirm(confirmText)) return;
     store.sendCommand(cmd);
   };
@@ -64,7 +69,11 @@ export function CommandPanel({ s }: { s: State }) {
     <section className="panel mission-control">
       <div className="panel-head">
         <h2>Mission control</h2>
-        <span className="help">One mode at a time. Click a mode to switch the satellite to it.</span>
+        <span className="help">
+          {ui.modeSelect
+            ? 'One mode at a time. Click a mode to switch the satellite to it.'
+            : `ADS-B Mission mode. Press Start to begin the ${ui.missionMs / 60000}-minute mission.`}
+        </span>
       </div>
 
       {/* ---- tela de modo atual ---- */}
@@ -77,7 +86,11 @@ export function CommandPanel({ s }: { s: State }) {
           <ModeIcon size={34} />
           <div>
             <div className="screen-mode">{modeInfo ? modeInfo.name.toUpperCase() : '— — —'}</div>
-            <div className="screen-detail">{mode ? modeDetail(mode, s, now, deployed) : 'No command confirmed yet: pick a mode below'}</div>
+            <div className="screen-detail">{s.commandedMask === null
+                ? ui.modeSelect
+                  ? 'No command confirmed yet: pick a mode below'
+                  : 'Ready: press Start to begin the mission'
+                : mode && modeDetail(mode, s, now, deployed)}</div>
           </div>
         </div>
         <div className="screen-bottom">
@@ -96,7 +109,8 @@ export function CommandPanel({ s }: { s: State }) {
       <div className="mode-grid">
         {MODES.map((m) => {
           const Icon = ICONS[m.id];
-          const active = mode === m.id;
+          const active = mode === m.id && s.commandedMask !== null;
+          const locked = !ui.modeSelect && (m.id !== 'mission' || running);
           const isPending = pending?.cmd === m.cmd;
           const isDeployed = m.id === 'deploy' && deployed;
           return (
@@ -104,7 +118,7 @@ export function CommandPanel({ s }: { s: State }) {
               key={m.id}
               className={`mode-btn ${m.id} ${active ? 'active' : ''} ${isPending ? 'pending' : ''} ${m.confirm ? 'danger' : ''}`}
               onClick={() => select(m.cmd, m.confirm)}
-              disabled={!canSend || active || isPending || isDeployed}
+              disabled={locked || !canSend || active || isPending || isDeployed}
               title={`${m.blurb} · sends ${hex(m.cmd)}`}
             >
               <Icon size={22} />

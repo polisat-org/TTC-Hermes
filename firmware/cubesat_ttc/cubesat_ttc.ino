@@ -9,25 +9,29 @@
 #include "../common/uart_rx.h"
 #include "../common/obc_frames.h"
 
-#define E32_RX_PIN 16
-#define E32_TX_PIN 17
-#define E32_M0_PIN 21
-#define E32_M1_PIN 22
-#define E32_AUX_PIN 18
+// E32 na UART2 (RX2/TX2). RX0/TX0 são do OBC (abaixo). Ver firmware/README.md.
+#define E32_RX_PIN 16  // RX2 <- TXD do E32
+#define E32_TX_PIN 17  // TX2 -> RXD do E32
+#define E32_M0_PIN 18
+#define E32_M1_PIN 5
+#define E32_AUX_PIN 15
 #define E32_BAUD 9600
 #define E32_TX_POWER E32_POWER_20DBM
 
-#define OBC_RX_PIN 25
-#define OBC_TX_PIN 26
+// OBC na UART0 (RX0/TX0), canal exclusivo TT&C/OBC. É a mesma UART da USB da DevKit: não use Serial.print
+// neste sketch (iria para o OBC). Ver firmware/README.md.
+#define OBC_RX_PIN 3   // RX0 <- TX do OBC
+#define OBC_TX_PIN 1   // TX0 -> RX do OBC
 #define OBC_BAUD 9600
 
-#define TTC_BUSY_PIN 27
+// TTC_BUSY no GPIO13: é o que a PCB do TT&C liga ao J2-10 do barramento (PC0 do OBC).
+#define TTC_BUSY_PIN 13
 #define TTC_BUSY_RELEASE_MS 2
-#define STATUS_LED_PIN 13
+#define STATUS_LED_PIN 2   // LED azul da DevKit (o GPIO13 é o TTC_BUSY)
 #define LED_HOLD_MS 50
 
 HardwareSerial LoraSerial(2);
-HardwareSerial ObcSerial(1);
+HardwareSerial &ObcSerial = Serial;  // UART0
 E32Driver lora(LoraSerial, E32_RX_PIN, E32_TX_PIN, E32_M0_PIN, E32_M1_PIN,
                E32_AUX_PIN, E32_BAUD);
 Rdt3 rdt(lora);

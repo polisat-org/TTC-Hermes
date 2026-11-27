@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import { uiFeatures } from './ui';
 import type { BridgeEvent, BridgeMessage, LinkInfo, ParserStats, Plane, Telemetry, Thermal } from './types';
 
 export interface TmPoint extends Telemetry {
@@ -53,6 +54,8 @@ export interface State {
   frames: { telemetry: number; payload: number; thermal: number; azimuth: number };
   lastFrameT: number | null; // último quadro do satélite (qualquer tipo)
   missionStart: number | null;
+  missionDone: boolean; // janela da missão encerrada (variante mission: já mandou 0x00)
+  callsigns: Map<number, string>; // ICAO -> indicativo (só chega no modo Pi)
   lastEventT: number | null; // tempo do último evento (relógio do replay)
 }
 
@@ -80,12 +83,36 @@ function emptyState(): State {
     frames: { telemetry: 0, payload: 0, thermal: 0, azimuth: 0 },
     lastFrameT: null,
     missionStart: null,
+    missionDone: false,
+    callsigns: new Map(),
     lastEventT: null,
   };
 }
 
+// Guardados no navegador: sobrevivem a recarregar a página (o bridge reenvia o histórico no snapshot).
+const LS_EXPORT = 'hermes.lastExportT';
+const LS_CLEARED = 'hermes.resultsClearedAt';
+const lsNum = (k: string) => {
+  try {
+    return Number(localStorage.getItem(k)) || 0;
+  } catch {
+    return 0;
+  }
+};
+const lsSet = (k: string, v: number) => {
+  try {
+    localStorage.setItem(k, String(v));
+  } catch {
+    /* sem localStorage: vale só nesta aba */
+  }
+};
+
 class Store {
   state: State = emptyState();
+  /** Último Export CSV (ms epoch). Posições mais novas que isto ainda não foram salvas. */
+  lastExportT = lsNum(LS_EXPORT);
+  /** Último Reset dos resultados: quadros de aviões anteriores são ignorados (também no snapshot). */
+  resultsClearedAt = lsNum(LS_CLEARED);
   version = 0;
   private listeners = new Set<() => void>();
   private pending = false;
@@ -134,12 +161,45 @@ class Store {
     this.sock.send(JSON.stringify({ type: 'command', mask }));
   }
 
+  /** Start. Na variante mission também liga o modo Mission (0x01). */
   startMission(t = Date.now()) {
+    if (this.state.missionStart !== null && !this.state.missionDone) return;
     this.state.missionStart = t;
+    this.state.missionDone = false;
+    if (uiFeatures(this.state.link).startCommands) this.sendCommand(0x01);
+    this.notify();
+  }
+  /** Fim da janela (variante mission): desliga o payload (0x00). */
+  finishMission() {
+    if (this.state.missionStart === null || this.state.missionDone) return;
+    this.state.missionDone = true;
+    if (uiFeatures(this.state.link).startCommands) this.sendCommand(0x00);
     this.notify();
   }
   resetMission() {
     this.state.missionStart = null;
+    this.state.missionDone = false;
+    this.notify();
+  }
+  markExported(t = Date.now()) {
+    this.lastExportT = t;
+    lsSet(LS_EXPORT, t);
+    this.notify();
+  }
+  /** Há posição de avião que chegou depois do último Export CSV? */
+  hasUnexported(): boolean {
+    for (const tr of this.state.tracks.values()) if (tr.points.some((p) => p.t > this.lastExportT)) return true;
+    return false;
+  }
+  /** Reset dos resultados: aviões, trajetórias, indicativos e contagem de quadros 'P'. O log em disco fica. */
+  resetResults(t = Date.now()) {
+    this.resultsClearedAt = t;
+    lsSet(LS_CLEARED, t);
+    this.state.tracks = new Map();
+    this.state.callsigns = new Map();
+    this.state.payloadFrames = 0;
+    this.state.lastPayloadT = null;
+    this.state.frames.payload = 0;
     this.notify();
   }
   clearTracks() {
@@ -150,7 +210,7 @@ class Store {
   private onMessage(msg: BridgeMessage) {
     switch (msg.type) {
       case 'snapshot': {
-        const keep = { ws: this.state.ws, missionStart: this.state.missionStart };
+        const keep = { ws: this.state.ws, missionStart: this.state.missionStart, missionDone: this.state.missionDone };
         this.state = { ...emptyState(), ...keep, link: msg.link };
         for (const ev of msg.events) this.apply(ev);
         break;
@@ -182,8 +242,9 @@ class Store {
         if (s.tm.length > MAX_TM) s.tm.splice(0, s.tm.length - MAX_TM);
         break;
       case 'payload':
-        s.frames.payload++;
         s.lastFrameT = ev.t;
+        if (this.beforeReset(ev.t)) break;
+        s.frames.payload++;
         s.payloadFrames++;
         s.lastPayloadT = ev.t;
         for (const p of ev.planes) this.addPlane(p, ev.t);
@@ -217,11 +278,23 @@ class Store {
         }
         break;
       }
+      case 'callsigns':
+        if (this.beforeReset(ev.t)) break;
+        for (const [hex, cs] of Object.entries(ev.map)) {
+          const name = cs.trim();
+          if (name) s.callsigns.set(parseInt(hex, 16), name);
+        }
+        break;
       case 'console':
         s.console.push({ t: ev.t, text: ev.text });
         if (s.console.length > 500) s.console.shift();
         break;
     }
+  }
+
+  /** Evento anterior ao último Reset (no replay o tempo é o do arquivo: não filtra). */
+  private beforeReset(t: number): boolean {
+    return this.state.link?.mode !== 'replay' && t < this.resultsClearedAt;
   }
 
   private addPlane(p: Plane, t: number) {

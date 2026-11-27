@@ -47,7 +47,8 @@ class E32Driver {
     serial_.write(readCommand, sizeof(readCommand));
     serial_.flush();
     uint8_t config[6];
-    if (!readBytes(config, sizeof(config), 1000) || config[0] != 0xC1) {
+    // O E32-433T20D responde ao C1 C1 C1 com cabeçalho 0xC0 (parâmetros salvos); 0xC1 aceito por compatibilidade.
+    if (!readBytes(config, sizeof(config), 1000) || (config[0] != 0xC0 && config[0] != 0xC1)) {
       setNormalMode();
       return false;
     }

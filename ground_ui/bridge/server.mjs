@@ -9,6 +9,12 @@
 //   node bridge/server.mjs --list                # lista portas seriais
 //   node bridge/server.mjs --tcp-listen 8766     # WSL: a porta COM é lida no Windows por
 //                                                # bridge/com_relay.ps1, que repassa via TCP
+//   node bridge/server.mjs --pi http://<ip-do-pi>:8080   # payload pela rede (hermes_simples.rede no Pi):
+//                                                # os quadros chegam no mesmo parser da USB do ground
+//   npm run pi -- http://<ip-do-pi>:8080         # o mesmo, pelo npm
+//
+// Interface: --ui full (ground station completa) ou --ui mission (só o modo Mission, Start e janela
+// de 16 min). Padrão: mission com --pi, full nos outros casos. A UI lê isso de link.ui.
 //
 // Toda sessão ao vivo é gravada em logs/<data-hora>/ (bytes crus + eventos
 // decodificados + CSV), atendendo HLR-SW-02 (dados estruturados, documentados,
@@ -40,6 +46,12 @@ const REPLAY = opt('replay', null);
 const SPEED = Number(opt('speed', 1));
 const SIM = flag('sim');
 const TCP_LISTEN = opt('tcp-listen', null);
+const PI_URL = opt('pi', null)?.replace(/\/+$/, '') ?? null;
+const UI = opt('ui', PI_URL ? 'mission' : 'full');
+if (UI !== 'full' && UI !== 'mission') {
+  console.error('--ui deve ser full ou mission');
+  process.exit(1);
+}
 const LOG_ROOT = path.resolve(opt('logs', path.join(ROOT, 'logs')));
 
 if (flag('list')) {
@@ -49,8 +61,8 @@ if (flag('list')) {
   }
   process.exit(0);
 }
-if (!SERIAL_PATH && !SIM && !REPLAY && !TCP_LISTEN) {
-  console.error('Use --port <porta>, --sim ou --replay <raw.jsonl>. Veja --list.');
+if (!SERIAL_PATH && !SIM && !REPLAY && !TCP_LISTEN && !PI_URL) {
+  console.error('Use --port <porta>, --pi <url>, --sim ou --replay <raw.jsonl>. Veja --list.');
   process.exit(1);
 }
 const MODE = REPLAY ? 'replay' : SIM ? 'sim' : 'serial';
@@ -76,7 +88,7 @@ class SessionLog {
     this.frameIdx = 0;
     fs.writeFileSync(
       path.join(dir, 'session.json'),
-      JSON.stringify({ started: new Date().toISOString(), mode: MODE, port: SERIAL_PATH, baud: BAUD }, null, 2),
+      JSON.stringify({ started: new Date().toISOString(), mode: MODE, port: SERIAL_PATH ?? PI_URL, baud: BAUD }, null, 2),
     );
   }
   rawBytes(t, dir, bytes) {
@@ -120,7 +132,7 @@ const log = MODE === 'replay' ? null : new SessionLog(path.join(LOG_ROOT, stamp(
 const MAX_HISTORY = 200_000;
 const history = [];
 const parser = new StreamParser();
-const link = { mode: MODE, port: SERIAL_PATH ?? (TCP_LISTEN ? `relay tcp:${TCP_LISTEN}` : null) ?? REPLAY ?? 'sim', connected: false, bytesRx: 0, bytesTx: 0, logDir: log?.dir ?? null };
+const link = { mode: MODE, source: PI_URL ? 'pi' : 'ttc', ui: UI, port: SERIAL_PATH ?? PI_URL ?? (TCP_LISTEN ? `relay tcp:${TCP_LISTEN}` : null) ?? REPLAY ?? 'sim', connected: false, bytesRx: 0, bytesTx: 0, logDir: log?.dir ?? null };
 
 function publish(ev) {
   history.push(ev);
@@ -208,6 +220,63 @@ async function startTcpRelay() {
       sock.on('error', () => {});
     })
     .listen(Number(TCP_LISTEN), '127.0.0.1', () => console.log(`[relay] aguardando com_relay.ps1 em 127.0.0.1:${TCP_LISTEN}`));
+}
+
+// Payload pela rede: GET /quadros traz os bytes que o TT&C entregaria ao solo; cada telecomando vira
+// POST /telecomando e a resposta volta como o quadro 'A' (cmd, status) que o ESP do ground manda pela USB.
+function startPi() {
+  let desde = 0;
+  let falhas = 0;
+  const fila = [];
+  let enviando = false;
+  const poll = async () => {
+    try {
+      const r = await fetch(`${PI_URL}/quadros?desde=${desde}`, { signal: AbortSignal.timeout(2000) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      if (d.ultimo < desde) desde = 0;   // o programa do Pi reiniciou: recomeça a numeração
+      for (const q of d.quadros) {
+        const t = Date.now();
+        onRx(fromHex(q.hex), t);
+        // Só o Pi manda o indicativo (o downlink do OBC não tem esse campo): {"E48000": "TAM3054", ...}
+        if (q.indicativos && Object.keys(q.indicativos).length) publish({ type: 'callsigns', t, map: q.indicativos });
+        desde = Math.max(desde, q.seq);
+      }
+      if (!link.connected || falhas) setLink(true);
+      falhas = 0;
+    } catch (e) {
+      if (++falhas === 3 || (falhas > 3 && link.connected)) setLink(false, `sem resposta de ${PI_URL} (${e.message})`);
+    }
+    setTimeout(poll, 300);
+  };
+  const enviaFila = async () => {
+    if (enviando) return;
+    enviando = true;
+    while (fila.length) {
+      const cmd = fila.shift();
+      let status = 1;   // falha no enlace
+      try {
+        const r = await fetch(`${PI_URL}/telecomando`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ mascara: cmd }),
+          signal: AbortSignal.timeout(3000),
+        });
+        if (r.ok) status = (await r.json()).status ?? 1;
+      } catch {
+        status = 1;
+      }
+      onRx(Uint8Array.from([0x41, cmd, status]));   // 'A' cmd status
+    }
+    enviando = false;
+  };
+  writeToDevice = (b) => {
+    if (!link.connected) return false;
+    for (const cmd of b) fila.push(cmd);
+    enviaFila();
+    return true;
+  };
+  poll();
 }
 
 function startSim() {
@@ -310,11 +379,12 @@ wss.on('connection', (ws) => {
 setInterval(() => broadcast({ type: 'stats', link, parser: parser.stats }), 1000);
 
 server.listen(HTTP_PORT, () => {
-  console.log(`[bridge] modo=${MODE}  UI: http://localhost:${HTTP_PORT}  WS: ws://localhost:${HTTP_PORT}/ws`);
+  console.log(`[bridge] ui=${UI} modo=${MODE}  UI: http://localhost:${HTTP_PORT}  WS: ws://localhost:${HTTP_PORT}/ws`);
   if (log) console.log(`[bridge] log da sessão: ${log.dir}`);
 });
 
-if (TCP_LISTEN) startTcpRelay();
+if (PI_URL) startPi();
+else if (TCP_LISTEN) startTcpRelay();
 else if (MODE === 'serial') startSerial();
 else if (MODE === 'sim') startSim();
 else startReplay();

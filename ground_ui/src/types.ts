@@ -72,6 +72,8 @@ export interface Thermal {
 
 export interface LinkInfo {
   mode: 'serial' | 'sim' | 'replay';
+  source?: 'ttc' | 'pi'; // de onde vêm os quadros: rádio TT&C (USB do ground) ou HTTP do payload
+  ui?: 'full' | 'mission'; // variante da interface escolhida no bridge (--ui)
   port: string;
   connected: boolean;
   error?: string | null;
@@ -98,7 +100,8 @@ export type BridgeEvent =
   | { type: 'azimuth'; t: number; value: number }
   | { type: 'ack'; t: number; cmd: number; status: number }
   | { type: 'cmd_sent'; t: number; cmd: number }
-  | { type: 'console'; t: number; text: string };
+  | { type: 'console'; t: number; text: string }
+  | { type: 'callsigns'; t: number; map: Record<string, string> }; // ICAO hex -> indicativo (só no modo Pi)
 
 export type BridgeMessage =
   | BridgeEvent

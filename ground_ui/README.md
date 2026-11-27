@@ -34,6 +34,23 @@ Opções: `--http <porta>` (padrão 8765), `--baud` (115200), `--logs <dir>`, `-
 
 Testes do parser: `npm test`.
 
+## Variantes: TT&C ou payload pela rede (`--pi`, `--ui`)
+
+Uma interface só, com duas origens de dados e duas variantes de tela (flags em `src/ui.ts`):
+
+```bash
+npm run pi -- http://10.93.42.30:8080          # quadros do Pi (hermes_simples.rede), UI "mission"
+npm run bridge -- --port COM13                 # rádio TT&C, UI "full" (completa)
+npm run bridge -- --port COM13 --ui mission    # rádio TT&C com a UI "mission"
+```
+
+- `--pi <url>`: o bridge busca `GET /quadros` no Pi a cada 300 ms e entrega os bytes ao mesmo parser da USB.
+  Cada telecomando vira `POST /telecomando`, e a resposta volta como o quadro 'A'. Sem ESP nem COM.
+- `--ui full` (padrão sem `--pi`): todos os modos, janela de 10 min, Start só marca o relógio.
+- `--ui mission` (padrão com `--pi`): só o modo Mission. Start manda 0x01, a janela é de 16 min e, ao fim, manda 0x00.
+- Tabela de aviões: ICAO, call sign, lat., lon., alt., velocidade, rumo. O call sign só chega no modo `--pi`:
+  o `PlaneDown_t` de 28 B do OBC não tem esse campo, então pelo TT&C ele aparece como "—".
+
 ## Quadros que chegam (os do OBC real)
 
 O `ground_ttc.ino` repassa à USB cada quadro do OBC exatamente como saiu dele (`common/telemetry.h`):

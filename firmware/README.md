@@ -10,6 +10,35 @@
 
 Protocolos e structs: `../docs/detalhamento_ttc.md`. Análise e pendências: `../docs/analise_ttc.md`.
 
+## Pinagem do E32 (CubeSat e ground)
+
+| Sinal do E32 | ESP32 do CubeSat (`cubesat_ttc`) | ESP32 do ground (`ground_ttc`) |
+|---|---|---|
+| TXD → RX do ESP32 | **RX2 (GPIO16)** | **RX2 (GPIO16)** |
+| RXD ← TX do ESP32 | **TX2 (GPIO17)** | **TX2 (GPIO17)** |
+| M0 | D18 (GPIO18) | D18 (GPIO18) |
+| M1 | D5 (GPIO5) | D5 (GPIO5) |
+| AUX | D15 (GPIO15) | D15 (GPIO15) |
+
+**RX0/TX0 (GPIO3/GPIO1) não são do LoRa.** A UART0 é a mesma ligada ao chip USB-serial da DevKit:
+
+- **Ground:** é a USB que fala com o PC (bridge da `ground_ui`). Não ligue nada em RX0/TX0.
+- **CubeSat:** RX0/TX0 são o **canal exclusivo TT&C/OBC**: RX0 (GPIO3) ← TX do OBC, TX0 (GPIO1) → RX do OBC,
+  9600 8N1 (`ObcSerial` é uma referência a `Serial`). Consequências:
+  - Não use `Serial.print` no `cubesat_ttc`: tudo o que sai em `Serial` vai para o OBC.
+  - A cada reset, a ROM do ESP32 imprime o log de boot (115200 baud) em TX0. O OBC, a 9600, recebe isso como
+    bytes aleatórios, e alguns podem cair na faixa de telecomando `0x00`–`0x0F`. **O OBC deve ignorar a UART do
+    TT&C por ~500 ms depois que o TT&C liga/reseta.**
+  - O TX do chip USB da DevKit também está ligado no RX0. Para gravar, tire o ESP32 da PCB (ou desconecte o TX do
+    OBC). Se o TT&C não receber nada do OBC na PCB, verifique se o chip USB está segurando a linha.
+
+GPIO5 e GPIO15 são pinos de strapping do ESP32. Funcionam aqui porque o AUX do E32 fica em nível alto ocioso,
+que é o nível esperado no boot. Se o ESP32 não der boot com o E32 ligado, comece verificando esses dois.
+
+Diagnóstico de bancada: `diag_e32/` (ground: lê a configuração do E32 e transmite um pacote a cada 3 s),
+`rx_monitor/` (ground: só escuta e imprime o que chega) e `diag_e32_sat/` (CubeSat: beacon `SAT<n>` a cada 5 s
+e eco do que recebe).
+
 ## Bancada de teste com dados simulados
 
 ```text
