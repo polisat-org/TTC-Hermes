@@ -310,3 +310,9 @@ button.send:hover:not(:disabled) { filter: brightness(1.08); }
 .mode-btn.active small { color: var(--mode); font-weight: 600; }
 .mode-btn.pending { opacity: 1; border-color: var(--mode); animation: pendingPulse 1s infinite; }
 @keyframes pendingPulse { 50% { background: color-mix(in srgb, var(--mode) 22%, var(--panel-2)); } }
+
+/* Payload status (modo --pi) */
+.status-chips { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; margin-top: 6px; }
+.status-chip-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12.5px; }
+.count.bad { background: color-mix(in srgb, var(--bad) 25%, transparent); color: var(--bad); }
+.ghost.danger { border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); color: var(--bad); }

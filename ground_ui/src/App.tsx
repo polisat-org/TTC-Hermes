@@ -3,6 +3,7 @@ import { AircraftTable } from './components/AircraftTable';
 import { CommandPanel } from './components/CommandPanel';
 import { KpiStrip } from './components/KpiStrip';
 import { MapView } from './components/MapView';
+import { PayloadStatus } from './components/PayloadStatus';
 import { RawPanel } from './components/RawPanel';
 import { TelemetryCharts } from './components/TelemetryCharts';
 import { TopBar } from './components/TopBar';
@@ -17,6 +18,7 @@ export function App() {
       <KpiStrip s={s} />
       <aside className="left">
         <CommandPanel s={s} />
+        <PayloadStatus s={s} />
       </aside>
       <main className="center">
         <MapView s={s} selected={selected} onSelect={setSelected} />

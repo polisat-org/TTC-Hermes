@@ -51,10 +51,12 @@ export interface State {
   commandedT: number | null;
   console: { t: number; text: string }[];
   errors: { t: number; text: string }[];
+  deviceLog: { t: number; level: 'info' | 'aviso' | 'erro'; text: string }[]; // erros/avisos do Pi
   frames: { telemetry: number; payload: number; thermal: number; azimuth: number };
   lastFrameT: number | null; // último quadro do satélite (qualquer tipo)
   missionStart: number | null;
   missionDone: boolean; // janela da missão encerrada (variante mission: já mandou 0x00)
+  missionEnd: number | null; // quando terminou (fim da janela ou Stop): o relógio para aí
   callsigns: Map<number, string>; // ICAO -> indicativo (só chega no modo Pi)
   lastEventT: number | null; // tempo do último evento (relógio do replay)
 }
@@ -80,10 +82,12 @@ function emptyState(): State {
     commandedT: null,
     console: [],
     errors: [],
+    deviceLog: [],
     frames: { telemetry: 0, payload: 0, thermal: 0, azimuth: 0 },
     lastFrameT: null,
     missionStart: null,
     missionDone: false,
+    missionEnd: null,
     callsigns: new Map(),
     lastEventT: null,
   };
@@ -166,19 +170,22 @@ class Store {
     if (this.state.missionStart !== null && !this.state.missionDone) return;
     this.state.missionStart = t;
     this.state.missionDone = false;
+    this.state.missionEnd = null;
     if (uiFeatures(this.state.link).startCommands) this.sendCommand(0x01);
     this.notify();
   }
-  /** Fim da janela (variante mission): desliga o payload (0x00). */
-  finishMission() {
+  /** Fim da janela ou Stop (variante mission): desliga o payload (0x00) e para o relógio. */
+  finishMission(t = Date.now()) {
     if (this.state.missionStart === null || this.state.missionDone) return;
     this.state.missionDone = true;
+    this.state.missionEnd = Math.min(t, this.state.missionStart + uiFeatures(this.state.link).missionMs);
     if (uiFeatures(this.state.link).startCommands) this.sendCommand(0x00);
     this.notify();
   }
   resetMission() {
     this.state.missionStart = null;
     this.state.missionDone = false;
+    this.state.missionEnd = null;
     this.notify();
   }
   markExported(t = Date.now()) {
@@ -210,7 +217,7 @@ class Store {
   private onMessage(msg: BridgeMessage) {
     switch (msg.type) {
       case 'snapshot': {
-        const keep = { ws: this.state.ws, missionStart: this.state.missionStart, missionDone: this.state.missionDone };
+        const keep = { ws: this.state.ws, missionStart: this.state.missionStart, missionDone: this.state.missionDone, missionEnd: this.state.missionEnd };
         this.state = { ...emptyState(), ...keep, link: msg.link };
         for (const ev of msg.events) this.apply(ev);
         break;
@@ -284,6 +291,12 @@ class Store {
           const name = cs.trim();
           if (name) s.callsigns.set(parseInt(hex, 16), name);
         }
+        break;
+      case 'device_log':
+        s.deviceLog.push({ t: ev.t, level: ev.level, text: ev.text });
+        if (s.deviceLog.length > 300) s.deviceLog.shift();
+        s.console.push({ t: ev.t, text: `[payload ${ev.level}] ${ev.text}` });
+        if (s.console.length > 500) s.console.shift();
         break;
       case 'console':
         s.console.push({ t: ev.t, text: ev.text });

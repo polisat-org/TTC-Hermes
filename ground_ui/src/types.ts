@@ -70,10 +70,20 @@ export interface Thermal {
   crc_ok: boolean;
 }
 
+/** Estado do payload no modo Pi (null = não se aplica, ex.: aviões simulados ou missão parada). */
+export interface PayloadHealth {
+  pedido: boolean; // o solo pediu a missão
+  ativo: boolean; // a missão está rodando no Pi
+  sdr_usb: boolean | null;
+  decodificador: boolean | null;
+  erros_json: number;
+}
+
 export interface LinkInfo {
   mode: 'serial' | 'sim' | 'replay';
   source?: 'ttc' | 'pi'; // de onde vêm os quadros: rádio TT&C (USB do ground) ou HTTP do payload
   ui?: 'full' | 'mission'; // variante da interface escolhida no bridge (--ui)
+  payload?: PayloadHealth; // só no modo Pi: estado do programa do payload
   port: string;
   connected: boolean;
   error?: string | null;
@@ -101,7 +111,8 @@ export type BridgeEvent =
   | { type: 'ack'; t: number; cmd: number; status: number }
   | { type: 'cmd_sent'; t: number; cmd: number }
   | { type: 'console'; t: number; text: string }
-  | { type: 'callsigns'; t: number; map: Record<string, string> }; // ICAO hex -> indicativo (só no modo Pi)
+  | { type: 'callsigns'; t: number; map: Record<string, string> } // ICAO hex -> indicativo (só no modo Pi)
+  | { type: 'device_log'; t: number; source: 'payload'; level: 'info' | 'aviso' | 'erro'; text: string }; // só no modo Pi
 
 export type BridgeMessage =
   | BridgeEvent

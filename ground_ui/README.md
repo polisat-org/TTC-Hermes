@@ -48,6 +48,9 @@ npm run bridge -- --port COM13 --ui mission    # rádio TT&C com a UI "mission"
   Cada telecomando vira `POST /telecomando`, e a resposta volta como o quadro 'A'. Sem ESP nem COM.
 - `--ui full` (padrão sem `--pi`): todos os modos, janela de 10 min, Start só marca o relógio.
 - `--ui mission` (padrão com `--pi`): só o modo Mission. Start manda 0x01, a janela é de 16 min e, ao fim, manda 0x00.
+- Payload status (só no modo `--pi`): o Pi manda o próprio estado (missão pedida/rodando, SDR no USB,
+  decodificador, erros de leitura) e os avisos e erros do programa (SDR fora do USB, decodificador caído,
+  start falhando, exceções). Aparecem no painel "Payload status" e no console. Não passam pelo OBC/TT&C.
 - Tabela de aviões: ICAO, call sign, lat., lon., alt., velocidade, rumo. O call sign só chega no modo `--pi`:
   o `PlaneDown_t` de 28 B do OBC não tem esse campo, então pelo TT&C ele aparece como "—".
 

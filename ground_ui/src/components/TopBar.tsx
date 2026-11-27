@@ -22,7 +22,7 @@ export function TopBar({ s }: { s: State }) {
   const now = useNow(500);
   const ui = uiFeatures(s.link);
   const MISSION_MS = ui.missionMs; // full: 10 min (HLR-ADS-05) · mission: 16 min
-  const raw = s.missionStart !== null ? now - s.missionStart : 0;
+  const raw = s.missionStart !== null ? (s.missionEnd ?? now) - s.missionStart : 0;
   const elapsed = ui.startCommands ? Math.min(raw, MISSION_MS) : raw;
   const pct = Math.min(100, (100 * elapsed) / MISSION_MS);
   const running = ui.startCommands && s.missionStart !== null && !s.missionDone;
@@ -59,8 +59,13 @@ export function TopBar({ s }: { s: State }) {
               Start
             </button>
           ) : running ? (
-            <button className="ghost" disabled>
-              Running
+            <button
+              className="ghost danger"
+              onClick={() => confirm('Stop the mission now? The payload will be turned off (0x00).') && store.finishMission()}
+              disabled={!canSend}
+              title="Stop the mission before the end of the window"
+            >
+              Stop
             </button>
           ) : (
             <button className="ghost" onClick={() => store.resetMission()}>

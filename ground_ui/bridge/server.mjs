@@ -226,15 +226,33 @@ async function startTcpRelay() {
 // POST /telecomando e a resposta volta como o quadro 'A' (cmd, status) que o ESP do ground manda pela USB.
 function startPi() {
   let desde = 0;
+  let evDesde = 0; // eventos (erros/avisos) do Pi já repassados
+  let estadoAntes = '';
   let falhas = 0;
   const fila = [];
   let enviando = false;
   const poll = async () => {
     try {
-      const r = await fetch(`${PI_URL}/quadros?desde=${desde}`, { signal: AbortSignal.timeout(2000) });
+      const r = await fetch(`${PI_URL}/quadros?desde=${desde}&ev=${evDesde}`, { signal: AbortSignal.timeout(2000) });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = await r.json();
       if (d.ultimo < desde) desde = 0;   // o programa do Pi reiniciou: recomeça a numeração
+      // Erros e avisos do Pi (só existem neste modo: não passam pelo OBC/TT&C).
+      if (typeof d.ultimo_evento === 'number') {
+        if (d.ultimo_evento < evDesde) evDesde = 0;
+        for (const e of d.eventos ?? []) {
+          publish({ type: 'device_log', t: Date.now(), source: 'payload', level: e.nivel, text: e.texto });
+          evDesde = Math.max(evDesde, e.seq);
+        }
+      }
+      if (d.estado) {
+        const j = JSON.stringify(d.estado);
+        if (j !== estadoAntes) {
+          estadoAntes = j;
+          link.payload = d.estado;
+          broadcast({ type: 'link', link });
+        }
+      }
       for (const q of d.quadros) {
         const t = Date.now();
         onRx(fromHex(q.hex), t);
