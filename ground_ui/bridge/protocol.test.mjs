@@ -22,18 +22,19 @@ const tcs = { probes_c: [-1.25, 3.5, null, 4], duty_pct: [80, 0], situation: [0,
 const cat = (...a) => Buffer.concat(a.map((x) => Buffer.from(x)));
 const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-4, `${a} != ${b}`);
 
-test('tamanhos iguais aos do OBC (Telemetry_t 85, PlaneDown_t 36, TcsStatus_t 32)', () => {
-  assert.equal(TELEMETRY_SIZE, 85);
+test('tamanhos iguais aos do OBC (Telemetry_t 90, PlaneDown_t 36, TcsStatus_t 32)', () => {
+  assert.equal(TELEMETRY_SIZE, 90);
   assert.equal(PLANE_SIZE, 36);
   assert.equal(THERMAL_SIZE, 32);
-  assert.equal(encodeTelemetry(tm).length, 86);
-  assert.equal(encodePayload(planes).length, 2 + 2 * 36);
+  assert.equal(encodeTelemetry(tm).length, 91);
+  assert.equal(encodePayload(planes).length, 12 + 2 * 36);
   assert.equal(encodeThermal(tcs).length, 33);
   assert.equal(encodeAzimuth(270.5).length, 6);
 });
 
 test('round-trip T, P, H, Z e A', () => {
-  const evs = new StreamParser().push(cat(encodeTelemetry(tm), encodePayload(planes), encodeThermal(tcs), encodeAzimuth(5.3), encodeAck(5, 0)));
+  const evs = new StreamParser().push(cat(encodeTelemetry({ ...tm, modo: 1, estado: 5, ultimo_tc: 0x01, resultado_tc: 0, seq_t: 200 }),
+    encodePayload(planes, { seq: 65535, tx_met_ms: 123456, mensagens: 98765 }), encodeThermal(tcs), encodeAzimuth(5.3), encodeAck(5, 0)));
   assert.deepEqual(evs.map((e) => e.kind), ['telemetry', 'payload', 'thermal', 'azimuth', 'ack']);
   const d = evs[0].data;
   assert.deepEqual([d.hora, d.minuto, d.segundo, d.dia, d.mes, d.ano], [13, 45, 7, 24, 11, 26]);
@@ -48,6 +49,8 @@ test('round-trip T, P, H, Z e A', () => {
   assert.equal(d.status_carregador_1, 0x5b);
   assert.equal(d.falha_carregador_2, 0x80);
   assert.equal(d.taxa_carga_descarga_bateria_2, -320);
+  assert.deepEqual([d.modo, d.estado, d.ultimo_tc, d.resultado_tc, d.seq_t], [1, 5, 1, 0, 200]);
+  assert.deepEqual(evs[1].header, { seq: 65535, tx_met_ms: 123456, mensagens: 98765 });
   const p = evs[1].planes;
   assert.equal(p.length, 2);
   assert.equal(p[0].icao, 0xe48c01);

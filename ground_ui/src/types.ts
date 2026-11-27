@@ -41,10 +41,22 @@ export interface Telemetry {
   carga_bateria_2: number;
   taxa_carga_descarga_bateria_1: number;
   taxa_carga_descarga_bateria_2: number;
+  modo: number; // 0 IDLE, 1 MISSION, 2 DETUMBLING, 3 POINTING
+  estado: number; // bit0 missão ativa, bit1 deploy em curso, bit2 antenas abertas
+  ultimo_tc: number; // último telecomando no OBC (0xFF = nenhum)
+  resultado_tc: number; // 0 executado, 1 recusado, 2 ignorado (deploy em curso)
+  seq_t: number; // contador de quadros 'T'
   azimuth: number | null; // angulo_apontamento em graus
 }
 
-// PlaneDown_t do OBC (28 B). NaN = campo ausente.
+// Cabeçalho do quadro 'P' (payload_downlink.h do OBC)
+export interface PayloadHeader {
+  seq: number; // contador de quadros 'P'
+  tx_met_ms: number; // instante da transmissão no relógio de missão do payload
+  mensagens: number; // mensagens ADS-B decodificadas desde o início da missão
+}
+
+// PlaneDown_t do OBC (36 B). NaN = campo ausente.
 export interface Plane {
   icao: number;
   latitude: number;
@@ -106,7 +118,7 @@ export interface ParserStats {
 
 export type BridgeEvent =
   | { type: 'telemetry'; t: number; data: Telemetry }
-  | { type: 'payload'; t: number; planes: Plane[] }
+  | { type: 'payload'; t: number; planes: Plane[]; header?: PayloadHeader }
   | { type: 'thermal'; t: number; data: Thermal }
   | { type: 'azimuth'; t: number; value: number }
   | { type: 'ack'; t: number; cmd: number; status: number }

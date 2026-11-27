@@ -1,8 +1,9 @@
 #pragma once
 
 // Quadros OBC -> TT&C, iguais aos do firmware do OBC (polisat-org/OBC):
-//   'T' + Telemetry_t   (1 + 85 B)  telemetria (Core/Inc/customTypes.h)
-//   'P' + n + n*Plane_t (2 + 36n B, n <= 20)  aviões ADS-B (Core/Inc/payload_downlink.h)
+//   'T' + Telemetry_t   (1 + 90 B)  telemetria (Core/Inc/customTypes.h)
+//   'P' + n + seq(u16) + tx_met_ms(u32) + mensagens(u32) + n*Plane_t (12 + 36n B, n <= 20)
+//                                    aviões ADS-B (Core/Inc/payload_downlink.h)
 //   'H' + TcsStatus_t   (1 + 32 B)  controle térmico do payload, repassado inteiro
 //   'Z' + 5 caracteres  (1 + 5 B)   azimute do ADCS, "ddd.d"
 // Tudo little-endian e packed. Se o OBC mudar um struct, mude AQUI (e os static_assert).
@@ -57,8 +58,14 @@ struct __attribute__((packed)) Telemetry_t {
   uint16_t carga_bateria_2;
   int16_t taxa_carga_descarga_bateria_1;
   int16_t taxa_carga_descarga_bateria_2;
+  // Estado do OBC
+  uint8_t modo;               // 0 IDLE, 1 MISSION, 2 DETUMBLING, 3 POINTING
+  uint8_t estado;             // bit0 missão ativa, bit1 deploy em curso, bit2 antenas abertas
+  uint8_t ultimo_tc;          // último telecomando no OBC (0xFF = nenhum)
+  uint8_t resultado_tc;       // 0 executado, 1 recusado, 2 ignorado (deploy em curso)
+  uint8_t seq_t;              // contador de quadros 'T'
 };
-static_assert(sizeof(Telemetry_t) == 85, "Telemetry_t precisa ter 85 B (igual ao OBC)");
+static_assert(sizeof(Telemetry_t) == 90, "Telemetry_t precisa ter 90 B (igual ao OBC)");
 
 // Avião no downlink (PlaneDown_t do OBC). NaN = campo ausente.
 struct __attribute__((packed)) Plane_t {
@@ -93,7 +100,7 @@ static_assert(sizeof(TcsStatus_t) == 32, "TcsStatus_t precisa ter 32 B");
 static constexpr uint8_t MAX_PLANES = 20;
 static constexpr size_t AZIMUTH_LEN = 5;
 static constexpr size_t TELEMETRY_FRAME_SIZE = 1 + sizeof(Telemetry_t);
-static constexpr size_t PAYLOAD_HEADER_SIZE = 2;
+static constexpr size_t PAYLOAD_HEADER_SIZE = 12;   // 'P' n seq(2) tx_met_ms(4) mensagens(4)
 static constexpr size_t PAYLOAD_MAX_SIZE = PAYLOAD_HEADER_SIZE + static_cast<size_t>(MAX_PLANES) * sizeof(Plane_t);
 static constexpr size_t THERMAL_FRAME_SIZE = 1 + sizeof(TcsStatus_t);
 static constexpr size_t AZIMUTH_FRAME_SIZE = 1 + AZIMUTH_LEN;

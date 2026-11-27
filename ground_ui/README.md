@@ -60,14 +60,27 @@ O `ground_ttc.ino` repassa à USB cada quadro do OBC exatamente como saiu dele (
 
 | Quadro | Tamanho | Quando | Conteúdo |
 |---|---|---|---|
-| `'T'` | 1 + 85 B | no boot do OBC e a cada 60 s | `Telemetry_t`: relógio, temperaturas, umidade/pressão, deploy, EPS (barramentos, carregadores, baterias), último azimute |
-| `'P'` | 2 + 28n B | a cada 5 s com a missão ligada | até 20 aviões (`PlaneDown_t`: ICAO, lat, lon, altitude, velocidade, rumo, tempo da posição) |
+| `'T'` | 1 + 90 B | no boot do OBC, a cada 60 s e **logo após cada telecomando** (e no fim do deploy) | `Telemetry_t`: relógio, temperaturas, umidade/pressão, deploy, EPS (barramentos, carregadores, baterias), último azimute, **estado do OBC** (modo, missão/deploy, último TC e resultado, `seq_t`) |
+| `'P'` | 12 + 36n B | a cada 5 s com a missão ligada | cabeçalho `seq` (u16), `tx_met_ms` (u32), `mensagens` (u32) + até 20 aviões (`PlaneDown_t`: ICAO, lat, lon, altitude, velocidade, rumo, tempo da posição, indicativo) |
 | `'H'` | 1 + 32 B | junto com o `'P'` | controle térmico do payload (4 sondas, aquecedores, situação, CRC) |
 | `'Z'` | 1 + 5 B | até 1 por segundo no apontamento | azimute do ADCS, `"ddd.d"` |
 | `'A'` | 3 B | resposta a cada telecomando | `'A'` cmd status (OK / FALHA / OCUPADO) |
 
-A telemetria do OBC **não informa o modo** (não há `*_state` no `Telemetry_t`): a tela mostra o último
-telecomando confirmado e o que dá para ver nos dados (antena aberta, aviões chegando, azimutes chegando).
+O `'T'` traz o **modo do OBC** e o resultado do último telecomando que chegou a ele: o painel Mission control
+mostra "OBC: MISSION · last command 0x01 executed", a prova de que o comando foi executado (não só recebido pelo
+ESP do TT&C).
+
+**Mission success (HLR-ADS-08)**, contado desde o Start (ou o Clear), com metas editáveis na tela:
+- mensagens ADS-B decodificadas a bordo: `mensagens` do 'P' (o OBC soma o aumento do contador `messages` do
+  dump1090 de cada avião desde o início da missão);
+- perda de dados: buracos no `seq` dos 'P' (e no `seq_t` dos 'T');
+- latência recepção → transmissão de cada posição nova: `tx_met_ms − last_pos_met_ms`, no relógio de missão do
+  payload (o OBC calcula `tx_met_ms` = maior `met_s` do bloco + o tempo que segurou o bloco). `planes.csv` tem
+  uma coluna `latencia_ms`.
+
+**Carga das baterias** (os INA3221 estão ligados errados na placa): pelo MP2733, status `CHG_STAT` (REG0Ch bits
+4-3), corrente de carga (REG12h, 17,5 mA/LSB), corrente e tensão de entrada (REG13h 13,3 mA, REG11h 60 mV, esta em
+`tensao_painel_solar_1/2`), mais o CRATE do MAX17048 (0,208 %/h). Escalas em `src/eps.ts`.
 No simulador (`npm run sim`) a telemetria vem a cada 10 s para não esperar (`--sim-tm-s <s>` muda isso).
 
 ## O que tem na tela

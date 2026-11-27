@@ -81,7 +81,7 @@ class SessionLog {
     this.azimuth = open('azimuth.csv');
     this.cmds = open('commands.csv');
     this.tm.write(['pc_time_iso', 'pc_time_ms', ...TELEMETRY_FIELDS.map(([n]) => n)].join(',') + '\n');
-    this.planes.write('pc_time_iso,pc_time_ms,frame_idx,count,icao_hex,latitude,longitude,altitude_ft,velocity_kt,track_deg,last_pos_met_ms\n');
+    this.planes.write('pc_time_iso,pc_time_ms,frame_idx,count,p_seq,tx_met_ms,mensagens_missao,icao_hex,callsign,latitude,longitude,altitude_ft,velocity_kt,track_deg,last_pos_met_ms,latencia_ms\n');
     this.thermal.write('pc_time_iso,pc_time_ms,valid,age_s,probe1_c,probe2_c,probe3_c,probe4_c,duty_a,duty_b,situation_a,situation_b,tcs_time_s,mission,planes\n');
     this.azimuth.write('pc_time_iso,pc_time_ms,azimuth_deg\n');
     this.cmds.write('pc_time_iso,pc_time_ms,event,cmd_hex,status\n');
@@ -104,8 +104,12 @@ class SessionLog {
       const idx = this.frameIdx++;
       for (const p of ev.planes) {
         this.planes.write(
-          [iso, ev.t, idx, ev.planes.length, p.icao.toString(16).padStart(6, '0'), p.latitude, p.longitude, p.altitude_ft,
-            p.velocity_kt, p.track_deg, p.last_pos_met_ms].join(',') + '\n',
+          [iso, ev.t, idx, ev.planes.length, ev.header?.seq ?? '', ev.header?.tx_met_ms ?? '', ev.header?.mensagens ?? '',
+            p.icao.toString(16).padStart(6, '0'), p.callsign ?? '', p.latitude, p.longitude, p.altitude_ft,
+            p.velocity_kt, p.track_deg, p.last_pos_met_ms,
+            // latência recepção -> transmissão (HLR-ADS-08): só para posições com horário válido
+            ev.header && p.last_pos_met_ms > 0 && ev.header.tx_met_ms >= p.last_pos_met_ms ? ev.header.tx_met_ms - p.last_pos_met_ms : '',
+          ].join(',') + '\n',
         );
       }
     } else if (ev.type === 'thermal') {
@@ -150,7 +154,7 @@ function onRx(bytes, t = Date.now()) {
 function handleParsed(evs, t) {
   for (const e of evs) {
     if (e.kind === 'telemetry') publish({ type: 'telemetry', t, data: e.data });
-    else if (e.kind === 'payload') publish({ type: 'payload', t, planes: e.planes });
+    else if (e.kind === 'payload') publish({ type: 'payload', t, planes: e.planes, header: e.header });
     else if (e.kind === 'thermal') publish({ type: 'thermal', t, data: e.data });
     else if (e.kind === 'azimuth') publish({ type: 'azimuth', t, value: e.value });
     else if (e.kind === 'ack') publish({ type: 'ack', t, cmd: e.cmd, status: e.status });

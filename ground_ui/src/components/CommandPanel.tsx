@@ -2,6 +2,7 @@ import { store, useNow, type State } from '../store';
 import { currentMode, hex, modeByCmd, MODES, type ModeId } from '../subsystems';
 import { CMD_STATUS_LABEL } from '../types';
 import { uiFeatures } from '../ui';
+import { OBC_MODES, TC_RESULT } from '../eps';
 import { IconAntenna, IconCompass, IconPlane, IconPower, IconSpin } from './Icons';
 
 const ICONS: Record<ModeId, (p: { size?: number }) => JSX.Element> = {
@@ -104,6 +105,19 @@ export function CommandPanel({ s }: { s: State }) {
           </span>
         </div>
       </div>
+
+      {/* ---- confirmação do próprio OBC (telemetria 'T', que sai logo após cada telecomando) ---- */}
+      {tm && s.link?.source !== 'pi' && (
+        <p className={`hint obc-confirm ${tm.resultado_tc === 0 ? '' : 'warn-text'}`}>
+          OBC: <b>{OBC_MODES[tm.modo] ?? `mode ${tm.modo}`}</b>
+          {tm.estado & 1 ? ' · payload on' : ''}
+          {tm.estado & 2 ? ' · deploying' : ''}
+          {tm.ultimo_tc === 0xff
+            ? ' · no command since boot'
+            : ` · last command ${hex(tm.ultimo_tc)} ${TC_RESULT[tm.resultado_tc] ?? `status ${tm.resultado_tc}`}`}
+          <span className="muted"> · telemetry at {clock(tm.t)}</span>
+        </p>
+      )}
 
       {/* ---- botões de modo ---- */}
       <div className="mode-grid">

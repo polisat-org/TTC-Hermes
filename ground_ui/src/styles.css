@@ -120,7 +120,7 @@ td { padding: 6px; border-top: 1px solid var(--line); white-space: nowrap; }
 .polisat { height: 40px; opacity: .95; }
 
 /* ---------- KPI strip ---------- */
-.kpis { grid-area: kpi; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
+.kpis { grid-area: kpi; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 12px; }
 .kpi {
   display: flex; gap: 12px; align-items: center; padding: 14px 16px; border-radius: var(--radius);
   background: var(--panel); border: 1px solid var(--line); position: relative; overflow: hidden;
@@ -316,3 +316,12 @@ button.send:hover:not(:disabled) { filter: brightness(1.08); }
 .status-chip-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12.5px; }
 .count.bad { background: color-mix(in srgb, var(--bad) 25%, transparent); color: var(--bad); }
 .ghost.danger { border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); color: var(--bad); }
+
+/* Mission success (HLR-ADS-08) */
+.metric-row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 10px; padding: 7px 0; border-top: 1px solid var(--line); font-size: 12.5px; }
+.metric-label { font-weight: 600; }
+.metric-value { font-variant-numeric: tabular-nums; font-weight: 600; }
+.metric-targets { margin-top: 8px; font-size: 12px; }
+.metric-target { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 6px; }
+.metric-target input { width: 80px; background: transparent; color: inherit; border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+.obc-confirm { margin-top: 8px; }

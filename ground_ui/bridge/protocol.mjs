@@ -5,8 +5,8 @@
 //
 //   PC -> Ground : 1 byte de comando 0x00..0x0F (bitmask Mission/Deploy/Detumbling/Pointing)
 //   Ground -> PC : 'A' cmd status                 (3 B)      resposta do ground ao telecomando
-//                  'T' Telemetry_t                (1 + 85 B) housekeeping do OBC, a cada 60 s
-//                  'P' n n*Plane_t                (2 + 36n B, n <= 20) aviões ADS-B, a cada 5 s na missão
+//                  'T' Telemetry_t                (1 + 90 B) housekeeping do OBC, a cada 60 s e logo após cada TC
+//                  'P' n seq tx_met_ms mensagens n*Plane_t  (12 + 36n B, n <= 20) aviões ADS-B, a cada 5 s na missão
 //                  'H' TcsStatus_t                (1 + 32 B) controle térmico do payload, junto com o 'P'
 //                  'Z' "ddd.d"                    (1 + 5 B)  azimute do ADCS, até 1 por segundo
 //
@@ -28,7 +28,8 @@ export const ID_PAYLOAD = 0x50; // 'P'
 export const ID_THERMAL = 0x48; // 'H'
 export const ID_AZIMUTH = 0x5a; // 'Z'
 
-export const TELEMETRY_SIZE = 85;
+export const TELEMETRY_SIZE = 90;
+export const PAYLOAD_HEADER = 12; // 'P' n seq(u16) tx_met_ms(u32) mensagens(u32)
 export const PLANE_SIZE = 36; // PlaneDown_t do OBC: 28 B de dados + indicativo de 8 B
 export const MAX_PLANES = 20;
 export const THERMAL_SIZE = 32;
@@ -38,7 +39,7 @@ export const TCS_TEMP_INVALID = -32768;
 // Tempo máximo esperando o resto de um quadro antes de considerar o byte inicial como ruído.
 const PARTIAL_TIMEOUT_MS = 1500;
 
-// ------------------------------------------------------------------ Telemetry_t (85 B, packed, LE)
+// ------------------------------------------------------------------ Telemetry_t (90 B, packed, LE)
 // Ordem e tipos de customTypes.h do OBC. Unidades: temperaturas °C, umidade %, pressão hPa (BME280),
 // tensões V e correntes A (INA3221), status/falha = registradores 0x0C/0x0D do MP2733, tensão da bateria mV e
 // carga % (MAX17048), angulo_apontamento = último azimute do ADCS ("ddd.d", vazio se nunca chegou).
@@ -54,11 +55,15 @@ export const TELEMETRY_FIELDS = [
   ['angulo_apontamento', 'str6'],
   ['tensao_bateria_1', 'u16'], ['tensao_bateria_2', 'u16'], ['carga_bateria_1', 'u16'], ['carga_bateria_2', 'u16'],
   ['taxa_carga_descarga_bateria_1', 'i16'], ['taxa_carga_descarga_bateria_2', 'i16'],
+  // estado do OBC: modo (0 IDLE, 1 MISSION, 2 DETUMBLING, 3 POINTING), estado (bit0 missão, bit1 deploy em
+  // curso, bit2 antenas abertas), último TC no OBC (0xFF nenhum), resultado (0 executado, 1 recusado,
+  // 2 ignorado), seq_t (contador de 'T')
+  ['modo', 'u8'], ['estado', 'u8'], ['ultimo_tc', 'u8'], ['resultado_tc', 'u8'], ['seq_t', 'u8'],
 ];
 const SIZES = { u8: 1, u16: 2, i16: 2, f32: 4, str6: 6 };
-if (TELEMETRY_FIELDS.reduce((s, [, t]) => s + SIZES[t], 0) !== TELEMETRY_SIZE) throw new Error('Telemetry_t != 85 B');
+if (TELEMETRY_FIELDS.reduce((s, [, t]) => s + SIZES[t], 0) !== TELEMETRY_SIZE) throw new Error('Telemetry_t != 90 B');
 
-/** Decodifica Telemetry_t (85 B a partir de off). */
+/** Decodifica Telemetry_t (90 B a partir de off). */
 export function decodeTelemetry(buf, off = 0) {
   const v = new DataView(buf.buffer, buf.byteOffset + off, TELEMETRY_SIZE);
   const out = {};
@@ -130,14 +135,17 @@ function decodeCallsign(buf, off) {
 }
 
 /** Codifica 'P' + n + Plane_t[] — usado pelo simulador e pelos testes. */
-export function encodePayload(planes) {
+export function encodePayload(planes, hdr = {}) {
   const n = Math.min(planes.length, MAX_PLANES);
-  const b = new Uint8Array(2 + n * PLANE_SIZE);
+  const b = new Uint8Array(PAYLOAD_HEADER + n * PLANE_SIZE);
   b[0] = ID_PAYLOAD;
   b[1] = n;
   const v = new DataView(b.buffer);
+  v.setUint16(2, (hdr.seq ?? 0) & 0xffff, true);
+  v.setUint32(4, (hdr.tx_met_ms ?? 0) >>> 0, true);
+  v.setUint32(8, (hdr.mensagens ?? 0) >>> 0, true);
   for (let i = 0; i < n; i++) {
-    const o = 2 + i * PLANE_SIZE;
+    const o = PAYLOAD_HEADER + i * PLANE_SIZE;
     const p = planes[i];
     v.setUint32(o, p.icao >>> 0, true);
     v.setFloat32(o + 4, p.latitude ?? NaN, true);
@@ -244,7 +252,7 @@ function telemetryPlausible(t) {
   const azOk = t.angulo_apontamento === '' || t.azimuth !== null;
   return (
     t.hora <= 23 && t.minuto <= 59 && t.segundo <= 59 && t.dia <= 31 && t.mes <= 12 && t.ano <= 99 &&
-    t.deploy_antena <= 1 && floats && azOk
+    t.deploy_antena <= 1 && t.modo <= 3 && t.estado <= 7 && (t.resultado_tc <= 2 || t.resultado_tc === 0xff) && floats && azOk
   );
 }
 
@@ -303,7 +311,7 @@ export class StreamParser {
             drop();
             continue;
           }
-          need = 2 + count * PLANE_SIZE;
+          need = PAYLOAD_HEADER + count * PLANE_SIZE;
         } else need = 2;
       } else {
         drop();
@@ -313,9 +321,9 @@ export class StreamParser {
       if (avail < need) {
         // rejeita cedo o que já dá para ver que não é quadro (evita esperar o timeout com o fluxo travado)
         let bad = false;
-        if (id === ID_PAYLOAD && avail >= 2) {
-          const full = Math.floor((avail - 2) / PLANE_SIZE);
-          for (let i = 0; i < full && !bad; i++) bad = !planePlausible(decodePlane(this.buf, pos + 2 + i * PLANE_SIZE));
+        if (id === ID_PAYLOAD && avail >= PAYLOAD_HEADER) {
+          const full = Math.floor((avail - PAYLOAD_HEADER) / PLANE_SIZE);
+          for (let i = 0; i < full && !bad; i++) bad = !planePlausible(decodePlane(this.buf, pos + PAYLOAD_HEADER + i * PLANE_SIZE));
         } else if (id === ID_THERMAL) {
           const m = 'TCS1';
           for (let i = 1; i < Math.min(avail, 5) && !bad; i++) bad = this.buf[pos + i] !== m.charCodeAt(i - 1);
@@ -364,11 +372,13 @@ export class StreamParser {
         const planes = [];
         let ok = true;
         for (let i = 0; i < count; i++) {
-          const p = decodePlane(raw, 2 + i * PLANE_SIZE);
+          const p = decodePlane(raw, PAYLOAD_HEADER + i * PLANE_SIZE);
           if (!planePlausible(p)) ok = false;
           planes.push(p);
         }
-        if (ok) ev = { kind: 'payload', planes, raw };
+        const hv = new DataView(raw.buffer, raw.byteOffset, PAYLOAD_HEADER);
+        const header = { seq: hv.getUint16(2, true), tx_met_ms: hv.getUint32(4, true), mensagens: hv.getUint32(8, true) };
+        if (ok) ev = { kind: 'payload', planes, header, raw };
       }
 
       // Confirmação por look-ahead: num fluxo alinhado, o byte logo após um quadro é o início do próximo ou o

@@ -1,4 +1,5 @@
 import { useNow, type State } from '../store';
+import { charger } from '../eps';
 import { IconBattery, IconCompass, IconPlane, IconSignal, IconSpin, IconThermo } from './Icons';
 
 type Tone = 'ok' | 'warn' | 'bad' | 'idle';
@@ -57,6 +58,10 @@ export function KpiStrip({ s }: { s: State }) {
   // bateria: a sonda mais fria do TCS (o OBC usa a mesma regra) ou a temperatura da telemetria
   const tbat = probes.length && th && s.lastEventT !== null && (s.lastEventT - th.t) < 15_000 ? Math.min(...probes) : tm?.temperatura_bateria;
   const azNow = az && now - az.t < 10_000 ? az.value : tm?.azimuth ?? null;
+  // carga pelos carregadores MP2733 (status + corrente de carga) e CRATE do MAX17048
+  const chg = tm ? [charger(tm, 1), charger(tm, 2)] : [];
+  const charging = chg.filter((c) => c.charging);
+  const ichg = charging.reduce((a, c) => a + c.ichgMa, 0);
 
   return (
     <section className="kpis">
@@ -75,6 +80,18 @@ export function KpiStrip({ s }: { s: State }) {
         unit="V"
         hint={ok(vbat) ? `Charge ${soc.join(' / ')} % · lowest cell` : tm ? 'No fuel gauge reading (EPS)' : 'Waiting for telemetry'}
         tone={!ok(vbat) ? 'idle' : vbat >= 3.6 ? 'ok' : vbat >= 3.4 ? 'warn' : 'bad'}
+      />
+      <Kpi
+        icon={<IconBattery />}
+        label="Charging"
+        value={!tm ? '—' : charging.length ? ichg.toFixed(0) : chg.some((c) => c.state === 'done') ? 'full' : 'no'}
+        unit={charging.length ? 'mA' : undefined}
+        hint={
+          !tm
+            ? 'Waiting for telemetry'
+            : chg.map((c, i) => `C${i + 1}: ${c.state}${c.vinV > 0 ? ` · in ${c.vinV.toFixed(1)} V` : ''}${c.crate ? ` · ${c.crate >= 0 ? '+' : ''}${c.crate.toFixed(1)} %/h` : ''}`).join(' | ')
+        }
+        tone={!tm ? 'idle' : charging.length ? 'ok' : chg.some((c) => c.fault) ? 'bad' : 'idle'}
       />
       <Kpi
         icon={<IconThermo />}

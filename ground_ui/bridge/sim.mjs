@@ -78,20 +78,29 @@ export class GroundSimulator extends EventEmitter {
       const delay = fail ? 15000 : 400 + Math.random() * 1800;
       setTimeout(() => {
         this.emitBytes(encodeAck(cmd, fail ? 1 : 0));
-        if (!fail) this.applyCommand(cmd);
+        if (!fail) {
+          this.applyCommand(cmd);
+          setTimeout(() => this.sendTelemetry(), 600); // como o OBC: 'T' logo após o telecomando
+        }
       }, delay);
     }
   }
 
   // Igual ao handleTelecommand do OBC: com o bit Deploy (e antena ainda não aberta) só faz o deploy.
   applyCommand(mask) {
+    this.lastTc = mask;
+    this.tcResult = this.state.deploy === 1 ? 2 : 0;
+    if (this.state.deploy === 1) return; // deploy em curso: o OBC ignora
     if (mask & 2 && this.state.deploy === 0) {
       this.state.deploy = 1;
       setTimeout(() => (this.state.deploy = 2), 3000);
       return;
     }
     const mission = !!(mask & 1);
-    if (mission && !this.state.mission) this.missionStart = Date.now();
+    if (mission && !this.state.mission) {
+      this.missionStart = Date.now();
+      this.msgs = 0; // contador de mensagens do OBC zera no início da missão
+    }
     this.state.mission = mission;
     this.state.detumbling = !!(mask & 4);
     // detumbling tem prioridade sobre o apontamento
@@ -131,6 +140,22 @@ export class GroundSimulator extends EventEmitter {
       tensao_bateria_2: Math.round(3880 + 150 * Math.sin(now / 450000) + noise(10)),
       carga_bateria_1: Math.round(80 + 10 * Math.sin(now / 450000)),
       carga_bateria_2: Math.round(78 + 10 * Math.sin(now / 450000)),
+      // carregador em carga rápida: VIN ~9 V, ~700 mA (escalas do MP2733), CRATE ~+10 %/h
+      tensao_painel_solar_1: charging ? 9.0 + noise(0.2) : 0,
+      tensao_painel_solar_2: charging ? 8.9 + noise(0.2) : 0,
+      adc_corrente_carga_1: charging ? Math.round(40 + noise(4)) : 0,
+      adc_corrente_carga_2: charging ? Math.round(38 + noise(4)) : 0,
+      adc_corrente_sistema_1: charging ? 32 : 0,
+      adc_corrente_sistema_2: charging ? 31 : 0,
+      adc_tensao_sistema_1: 196,
+      adc_tensao_sistema_2: 195,
+      taxa_carga_descarga_bateria_1: charging ? 48 : -10,
+      taxa_carga_descarga_bateria_2: charging ? 46 : -10,
+      modo: this.state.detumbling ? 2 : this.state.pointing ? 3 : this.state.mission ? 1 : 0,
+      estado: (this.state.mission ? 1 : 0) | (this.state.deploy === 1 ? 2 : 0) | (this.state.deploy === 2 ? 4 : 0),
+      ultimo_tc: this.lastTc ?? 0xff,
+      resultado_tc: this.tcResult ?? 0xff,
+      seq_t: (this.seqT = ((this.seqT ?? 0) + 1) & 0xff),
     };
     this.emitBytes(encodeTelemetry(tm));
   }
@@ -150,7 +175,10 @@ export class GroundSimulator extends EventEmitter {
       last_pos_met_ms: Math.max(1, met - Math.floor(Math.random() * 2000)),
       callsign: p.callsign,
     }));
-    this.emitBytes(encodePayload(planes));
+    // cabeçalho do 'P': seq, instante da transmissão (relógio de missão) e mensagens decodificadas
+    this.seqP = ((this.seqP ?? -1) + 1) & 0xffff;
+    this.msgs = (this.msgs ?? 0) + planes.length * Math.floor(8 + Math.random() * 12);
+    this.emitBytes(encodePayload(planes, { seq: this.seqP, tx_met_ms: met + 150, mensagens: this.msgs }));
     const heat = this.state.mission ? 60 : 0;
     this.emitBytes(
       encodeThermal({

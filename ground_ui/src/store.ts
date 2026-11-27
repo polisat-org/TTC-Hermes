@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { uiFeatures } from './ui';
-import type { BridgeEvent, BridgeMessage, LinkInfo, ParserStats, Plane, Telemetry, Thermal } from './types';
+import type { BridgeEvent, BridgeMessage, LinkInfo, ParserStats, PayloadHeader, Plane, Telemetry, Thermal } from './types';
 
 export interface TmPoint extends Telemetry {
   t: number; // horário de chegada no PC (ms epoch)
@@ -35,6 +35,27 @@ export interface CommandRecord {
   status?: number;
 }
 
+/** Métricas de sucesso da missão (HLR-ADS-08), contadas desde o Start (ou o último Clear). */
+export interface AdsbMetrics {
+  pRecv: number; // quadros 'P' recebidos
+  pLost: number; // quadros 'P' perdidos (buracos no seq)
+  pSeq: number | null;
+  decoded: number; // mensagens ADS-B decodificadas a bordo
+  msgsLast: number | null;
+  latMs: number[]; // latência recepção -> transmissão de cada posição nova
+  tRecv: number; // quadros 'T'
+  tLost: number;
+  tSeq: number | null;
+}
+export const emptyMetrics = (): AdsbMetrics => ({ pRecv: 0, pLost: 0, pSeq: null, decoded: 0, msgsLast: null, latMs: [], tRecv: 0, tLost: 0, tSeq: null });
+
+/** Metas do ADS-08: a equipe define (editáveis na tela, guardadas no navegador). */
+export interface AdsbTargets {
+  minDecoded: number; // mensagens decodificadas na janela, no mínimo
+  maxLossPct: number; // perda de quadros 'P', no máximo (%)
+  maxLatencyS: number; // latência recepção -> transmissão, no máximo (s)
+}
+
 export interface State {
   ws: 'connecting' | 'open' | 'closed';
   link: LinkInfo | null;
@@ -57,7 +78,8 @@ export interface State {
   missionStart: number | null;
   missionDone: boolean; // janela da missão encerrada (variante mission: já mandou 0x00)
   missionEnd: number | null; // quando terminou (fim da janela ou Stop): o relógio para aí
-  callsigns: Map<number, string>; // ICAO -> indicativo (só chega no modo Pi)
+  callsigns: Map<number, string>; // ICAO -> indicativo
+  metrics: AdsbMetrics;
   lastEventT: number | null; // tempo do último evento (relógio do replay)
 }
 
@@ -89,6 +111,7 @@ function emptyState(): State {
     missionDone: false,
     missionEnd: null,
     callsigns: new Map(),
+    metrics: emptyMetrics(),
     lastEventT: null,
   };
 }
@@ -96,6 +119,15 @@ function emptyState(): State {
 // Guardados no navegador: sobrevivem a recarregar a página (o bridge reenvia o histórico no snapshot).
 const LS_EXPORT = 'hermes.lastExportT';
 const LS_CLEARED = 'hermes.resultsClearedAt';
+const LS_TARGETS = 'hermes.adsbTargets';
+const DEFAULT_TARGETS: AdsbTargets = { minDecoded: 500, maxLossPct: 10, maxLatencyS: 10 };
+function loadTargets(): AdsbTargets {
+  try {
+    return { ...DEFAULT_TARGETS, ...JSON.parse(localStorage.getItem(LS_TARGETS) ?? '{}') };
+  } catch {
+    return { ...DEFAULT_TARGETS };
+  }
+}
 const lsNum = (k: string) => {
   try {
     return Number(localStorage.getItem(k)) || 0;
@@ -117,6 +149,17 @@ class Store {
   lastExportT = lsNum(LS_EXPORT);
   /** Último Reset dos resultados: quadros de aviões anteriores são ignorados (também no snapshot). */
   resultsClearedAt = lsNum(LS_CLEARED);
+  targets: AdsbTargets = loadTargets();
+
+  setTargets(t: Partial<AdsbTargets>) {
+    this.targets = { ...this.targets, ...t };
+    try {
+      localStorage.setItem(LS_TARGETS, JSON.stringify(this.targets));
+    } catch {
+      /* só nesta aba */
+    }
+    this.notify();
+  }
   version = 0;
   private listeners = new Set<() => void>();
   private pending = false;
@@ -171,6 +214,7 @@ class Store {
     this.state.missionStart = t;
     this.state.missionDone = false;
     this.state.missionEnd = null;
+    this.state.metrics = emptyMetrics(); // as métricas do ADS-08 valem para a janela da missão
     if (uiFeatures(this.state.link).startCommands) this.sendCommand(0x01);
     this.notify();
   }
@@ -204,6 +248,7 @@ class Store {
     lsSet(LS_CLEARED, t);
     this.state.tracks = new Map();
     this.state.callsigns = new Map();
+    this.state.metrics = emptyMetrics();
     this.state.payloadFrames = 0;
     this.state.lastPayloadT = null;
     this.state.frames.payload = 0;
@@ -247,6 +292,15 @@ class Store {
         s.lastFrameT = ev.t;
         s.tm.push({ ...ev.data, t: ev.t });
         if (s.tm.length > MAX_TM) s.tm.splice(0, s.tm.length - MAX_TM);
+        if (!this.beforeReset(ev.t)) {
+          const m = s.metrics;
+          m.tRecv++;
+          if (m.tSeq !== null) {
+            const d = (ev.data.seq_t - m.tSeq) & 0xff;
+            if (d > 1 && d < 64) m.tLost += d - 1; // salto grande = OBC reiniciou
+          }
+          m.tSeq = ev.data.seq_t;
+        }
         break;
       case 'payload':
         s.lastFrameT = ev.t;
@@ -254,7 +308,8 @@ class Store {
         s.frames.payload++;
         s.payloadFrames++;
         s.lastPayloadT = ev.t;
-        for (const p of ev.planes) this.addPlane(p, ev.t);
+        if (ev.header) this.countPayload(ev.header);
+        for (const p of ev.planes) this.addPlane(p, ev.t, ev.header);
         break;
       case 'thermal':
         s.frames.thermal++;
@@ -310,7 +365,22 @@ class Store {
     return this.state.link?.mode !== 'replay' && t < this.resultsClearedAt;
   }
 
-  private addPlane(p: Plane, t: number) {
+  /** Perda (buracos no seq do 'P') e mensagens decodificadas (contador da missão no OBC). */
+  private countPayload(h: PayloadHeader) {
+    const m = this.state.metrics;
+    if (m.pSeq !== null) {
+      const d = (h.seq - m.pSeq) & 0xffff;
+      if (d === 0) return; // repetido
+      if (d < 1000) m.pLost += d - 1; // salto enorme = OBC reiniciou: não conta como perda
+    }
+    m.pSeq = h.seq;
+    m.pRecv++;
+    // o contador do OBC zera no início da missão: soma os aumentos; se voltou, recomeçou
+    m.decoded += m.msgsLast === null ? h.mensagens : h.mensagens >= m.msgsLast ? h.mensagens - m.msgsLast : h.mensagens;
+    m.msgsLast = h.mensagens;
+  }
+
+  private addPlane(p: Plane, t: number, h?: PayloadHeader) {
     let tr = this.state.tracks.get(p.icao);
     if (!tr) {
       tr = { id: p.icao, points: [], firstT: t, lastT: t, altitude: null, speed: null, heading: null, lastPosMet: 0 };
@@ -325,6 +395,12 @@ class Store {
     if (!Number.isFinite(p.latitude) || !Number.isFinite(p.longitude) || p.last_pos_met_ms === 0) return;
     if (p.last_pos_met_ms === tr.lastPosMet && tr.points.length) return;
     tr.lastPosMet = p.last_pos_met_ms;
+    // latência da posição nova: recepção a bordo -> transmissão do 'P' (relógio de missão do payload)
+    if (h && h.tx_met_ms >= p.last_pos_met_ms) {
+      const lat = this.state.metrics.latMs;
+      lat.push(h.tx_met_ms - p.last_pos_met_ms);
+      if (lat.length > 50_000) lat.shift();
+    }
     tr.points.push({ t, lat: p.latitude, lon: p.longitude, alt: p.altitude_ft });
     if (tr.points.length > MAX_POINTS_PER_TRACK) tr.points.shift();
   }

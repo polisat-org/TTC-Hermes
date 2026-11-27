@@ -9,7 +9,7 @@
 #define RDT_HEADER_SIZE 12
 #define RDT_CRC_SIZE 2
 #define RDT_MAX_PAYLOAD 128
-#define RDT_MAX_MESSAGE 768   // cabe o maior quadro do OBC ('P' com 20 aviões = 722 B)
+#define RDT_MAX_MESSAGE 768   // cabe o maior quadro do OBC ('P' com 20 aviões = 732 B)
 #define RDT_MAX_FRAGS 8
 #define RDT_MAX_PACKET (RDT_HEADER_SIZE + RDT_MAX_PAYLOAD + RDT_CRC_SIZE)
 #define RDT_RX_BUF 512
