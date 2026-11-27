@@ -11,6 +11,16 @@ enum E32Power : uint8_t {
   E32_POWER_10DBM = 3
 };
 
+// Taxa no ar (SPED bits 2..0). Os dois lados (sat e ground) PRECISAM usar a mesma.
+// 4,8 kbps desde o 'P' de 36 B por avião (com indicativo): a 2,4 kbps, 20 aviões + H + Z não cabem
+// no ciclo de 5 s (checks/radio_link.cpp). Custa ~3 dB de sensibilidade em relação a 2,4 kbps.
+#define E32_AIR_2K4 0x02
+#define E32_AIR_4K8 0x03
+#define E32_AIR_9K6 0x04
+#ifndef E32_AIR_RATE
+#define E32_AIR_RATE E32_AIR_4K8
+#endif
+
 class E32Driver {
  public:
   E32Driver(HardwareSerial &serial, uint8_t rxPin, uint8_t txPin, uint8_t m0Pin,
@@ -35,7 +45,9 @@ class E32Driver {
     return waitReady(3000);
   }
 
-  bool configure(uint8_t powerBits) {
+  // Grava potência e taxa no ar (SPED bits 2..0), mantendo endereço, canal, UART e o resto do OPTION.
+  // Se o módulo já está assim, não regrava (poupa a memória do E32).
+  bool configure(uint8_t powerBits, uint8_t airRate = E32_AIR_RATE) {
     setConfigMode();
     delay(50);
     if (!waitReady(2000)) {
@@ -53,7 +65,14 @@ class E32Driver {
       return false;
     }
     uint8_t option = static_cast<uint8_t>((config[5] & 0xFC) | (powerBits & 0x03));
-    uint8_t writeCommand[6] = {0xC2, config[1], config[2], config[3], config[4], option};
+    uint8_t sped = static_cast<uint8_t>((config[3] & 0xF8) | (airRate & 0x07));
+    if (option == config[5] && sped == config[3]) {
+      setNormalMode();
+      delay(50);
+      waitReady(2000);
+      return true;
+    }
+    uint8_t writeCommand[6] = {0xC2, config[1], config[2], sped, config[4], option};
     clearRx();
     serial_.write(writeCommand, sizeof(writeCommand));
     serial_.flush();

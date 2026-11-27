@@ -78,7 +78,7 @@ struct __attribute__((packed)) Plane_t {   // v2
 static_assert(sizeof(Plane_t) == 28, "Plane_t size");
 ```
 
-Com 20 aviões, `'P'` vira `2 + 20×28 = 562 B`. Ajustar `RDT_MAX_MESSAGE` para 640 (5 fragmentos ≤ `RDT_MAX_FRAGS = 8`)
+Com 20 aviões, `'P'` vira `2 + 20×36 = 722 B` (36 B por avião desde a inclusão do indicativo). `RDT_MAX_MESSAGE` = 768 (6 fragmentos ≤ `RDT_MAX_FRAGS = 8`)
 e os buffers `downlinkBuffer` e `rxAssembly_`, ou paginar em dois quadros `'P'` de até 10 aviões. A UI concentra toda a
 decodificação em `ground_ui/bridge/protocol.mjs` (`decodePlane`): mudar o struct é trocar só essa função.
 
@@ -136,6 +136,11 @@ gera colisões e reforça o problema 1. Fixar um `CHAN` e um endereço próprios
 
 Com 2,4 kbps o enlace fica perto da saturação (TM + payload ≈ 2 s de ar por ciclo). Em distância de bancada/arena,
 4,8 ou 9,6 kbps (`SPED` bits 2–0 = `011`/`100`) dão folga e reduzem a latência (HLR-ADS-08). Avaliar alcance.
+
+**Decidido (27/11/2026): 4,8 kbps.** Com o indicativo no `PlaneDown_t` (36 B por avião, `'P'` de 722 B com 20 aviões),
+a 2,4 kbps o ciclo de 5 s não fecha (o solo termina 5,8 s depois do último quadro; `checks/radio_link.cpp`). A 4,8 kbps
+termina em 0,2 s, com o canal ~47% ocupado. O `configure()` do `e32.h` grava `E32_AIR_RATE` nos dois módulos a cada boot
+(só regrava se mudou). Custo: ~3 dB de sensibilidade em relação a 2,4 kbps.
 
 ---
 

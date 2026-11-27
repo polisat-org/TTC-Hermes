@@ -35,6 +35,7 @@ export class GroundSimulator extends EventEmitter {
       const start = destPoint(SITE.lat, SITE.lon, Math.random() * 360, 20e3 + Math.random() * 60e3);
       return {
         icao: 0xe48000 + i * 37,
+        callsign: i % 4 === 3 ? '' : `${['TAM', 'GLO', 'AZU'][i % 3]}${3000 + i * 17}`, // alguns sem indicativo
         heading: Math.random() * 360,
         speed: 180 + Math.random() * 90, // m/s
         alt: 3000 + Math.random() * 30000, // ft
@@ -147,6 +148,7 @@ export class GroundSimulator extends EventEmitter {
       velocity_kt: p.speed * 1.94384,
       track_deg: p.heading,
       last_pos_met_ms: Math.max(1, met - Math.floor(Math.random() * 2000)),
+      callsign: p.callsign,
     }));
     this.emitBytes(encodePayload(planes));
     const heat = this.state.mission ? 60 : 0;

@@ -9,6 +9,8 @@
 #include "../common/uart_rx.h"
 #include "../common/obc_frames.h"
 
+static_assert(OBC_FRAME_MAX <= RDT_MAX_MESSAGE, "o maior quadro do OBC precisa caber numa mensagem RDT");
+
 // E32 na UART2 (RX2/TX2). RX0/TX0 são do OBC (abaixo). Ver firmware/README.md.
 #define E32_RX_PIN 16  // RX2 <- TXD do E32
 #define E32_TX_PIN 17  // TX2 -> RXD do E32

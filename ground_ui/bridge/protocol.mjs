@@ -6,7 +6,7 @@
 //   PC -> Ground : 1 byte de comando 0x00..0x0F (bitmask Mission/Deploy/Detumbling/Pointing)
 //   Ground -> PC : 'A' cmd status                 (3 B)      resposta do ground ao telecomando
 //                  'T' Telemetry_t                (1 + 85 B) housekeeping do OBC, a cada 60 s
-//                  'P' n n*Plane_t                (2 + 28n B, n <= 20) aviões ADS-B, a cada 5 s na missão
+//                  'P' n n*Plane_t                (2 + 36n B, n <= 20) aviões ADS-B, a cada 5 s na missão
 //                  'H' TcsStatus_t                (1 + 32 B) controle térmico do payload, junto com o 'P'
 //                  'Z' "ddd.d"                    (1 + 5 B)  azimute do ADCS, até 1 por segundo
 //
@@ -29,7 +29,7 @@ export const ID_THERMAL = 0x48; // 'H'
 export const ID_AZIMUTH = 0x5a; // 'Z'
 
 export const TELEMETRY_SIZE = 85;
-export const PLANE_SIZE = 28;
+export const PLANE_SIZE = 36; // PlaneDown_t do OBC: 28 B de dados + indicativo de 8 B
 export const MAX_PLANES = 20;
 export const THERMAL_SIZE = 32;
 export const AZIMUTH_LEN = 5;
@@ -102,7 +102,7 @@ export function encodeTelemetry(t) {
   return b;
 }
 
-// ------------------------------------------------------------------ Plane_t (PlaneDown_t do OBC, 28 B)
+// ------------------------------------------------------------------ Plane_t (PlaneDown_t do OBC, 36 B)
 /** Decodifica um avião. NaN = campo ausente no ADS-B. */
 export function decodePlane(buf, off = 0) {
   const v = new DataView(buf.buffer, buf.byteOffset + off, PLANE_SIZE);
@@ -114,7 +114,19 @@ export function decodePlane(buf, off = 0) {
     velocity_kt: v.getFloat32(16, true),
     track_deg: v.getFloat32(20, true),
     last_pos_met_ms: v.getUint32(24, true), // tempo de missão da posição; 0 = inválido
+    callsign: decodeCallsign(buf, off + 28), // '' = sem indicativo
   };
+}
+
+/** char[8]: ASCII 0x20..0x7E até o primeiro byte fora da faixa (o OBC completa com 0); sem espaços nas pontas. */
+function decodeCallsign(buf, off) {
+  let s = '';
+  for (let i = 0; i < 8; i++) {
+    const c = buf[off + i];
+    if (c < 0x20 || c > 0x7e) break;
+    s += String.fromCharCode(c);
+  }
+  return s.trim();
 }
 
 /** Codifica 'P' + n + Plane_t[] — usado pelo simulador e pelos testes. */
@@ -134,6 +146,8 @@ export function encodePayload(planes) {
     v.setFloat32(o + 16, p.velocity_kt ?? NaN, true);
     v.setFloat32(o + 20, p.track_deg ?? NaN, true);
     v.setUint32(o + 24, p.last_pos_met_ms >>> 0, true);
+    const cs = String(p.callsign ?? '').slice(0, 8);
+    for (let k = 0; k < cs.length; k++) b[o + 28 + k] = cs.charCodeAt(k) & 0x7f;
   }
   return b;
 }

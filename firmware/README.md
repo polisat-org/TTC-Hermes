@@ -10,6 +10,12 @@
 
 Protocolos e structs: `../docs/detalhamento_ttc.md`. Análise e pendências: `../docs/analise_ttc.md`.
 
+## Configuração do E32
+
+No boot, os dois sketches chamam `lora.configure(E32_TX_POWER)` (`common/e32.h`), que lê os parâmetros do módulo e
+grava **20 dBm** e a taxa no ar **4,8 kbps** (`E32_AIR_RATE`), mantendo endereço, canal (0x17 = 433 MHz) e a UART
+(9600 8N1). Sat e ground precisam da mesma taxa: um módulo a 2,4 kbps não ouve um a 4,8 kbps.
+
 ## Pinagem do E32 (CubeSat e ground)
 
 | Sinal do E32 | ESP32 do CubeSat (`cubesat_ttc`) | ESP32 do ground (`ground_ttc`) |

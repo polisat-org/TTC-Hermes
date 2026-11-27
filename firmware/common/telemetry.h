@@ -2,7 +2,7 @@
 
 // Quadros OBC -> TT&C, iguais aos do firmware do OBC (polisat-org/OBC):
 //   'T' + Telemetry_t   (1 + 85 B)  telemetria (Core/Inc/customTypes.h)
-//   'P' + n + n*Plane_t (2 + 28n B, n <= 20)  aviões ADS-B (Core/Inc/payload_downlink.h)
+//   'P' + n + n*Plane_t (2 + 36n B, n <= 20)  aviões ADS-B (Core/Inc/payload_downlink.h)
 //   'H' + TcsStatus_t   (1 + 32 B)  controle térmico do payload, repassado inteiro
 //   'Z' + 5 caracteres  (1 + 5 B)   azimute do ADCS, "ddd.d"
 // Tudo little-endian e packed. Se o OBC mudar um struct, mude AQUI (e os static_assert).
@@ -69,8 +69,9 @@ struct __attribute__((packed)) Plane_t {
   float velocity_kt;          // nós (gs)
   float track_deg;            // graus
   uint32_t last_pos_met_ms;   // tempo de missão da posição; 0 = inválido
+  char callsign[8];           // indicativo de voo (ASCII), completado com 0
 };
-static_assert(sizeof(Plane_t) == 28, "Plane_t precisa ter 28 B (PlaneDown_t do OBC)");
+static_assert(sizeof(Plane_t) == 36, "Plane_t precisa ter 36 B (PlaneDown_t do OBC)");
 
 // Trailer do controle térmico (TCS) do Raspberry Pi, repassado inteiro pelo OBC.
 struct __attribute__((packed)) TcsStatus_t {
@@ -96,4 +97,4 @@ static constexpr size_t PAYLOAD_HEADER_SIZE = 2;
 static constexpr size_t PAYLOAD_MAX_SIZE = PAYLOAD_HEADER_SIZE + static_cast<size_t>(MAX_PLANES) * sizeof(Plane_t);
 static constexpr size_t THERMAL_FRAME_SIZE = 1 + sizeof(TcsStatus_t);
 static constexpr size_t AZIMUTH_FRAME_SIZE = 1 + AZIMUTH_LEN;
-static constexpr size_t OBC_FRAME_MAX = PAYLOAD_MAX_SIZE;   // o maior quadro (562 B)
+static constexpr size_t OBC_FRAME_MAX = PAYLOAD_MAX_SIZE;

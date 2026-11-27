@@ -53,6 +53,7 @@ export interface Plane {
   velocity_kt: number;
   track_deg: number;
   last_pos_met_ms: number;
+  callsign: string; // indicativo de voo ('' = sem)
 }
 
 // Trailer do controle térmico (TCS) do payload, repassado pelo OBC no quadro 'H'.

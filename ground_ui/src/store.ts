@@ -317,6 +317,7 @@ class Store {
       this.state.tracks.set(p.icao, tr);
     }
     tr.lastT = t;
+    if (p.callsign) this.state.callsigns.set(p.icao, p.callsign);
     if (Number.isFinite(p.altitude_ft)) tr.altitude = p.altitude_ft;
     if (Number.isFinite(p.velocity_kt)) tr.speed = p.velocity_kt;
     if (Number.isFinite(p.track_deg)) tr.heading = p.track_deg;

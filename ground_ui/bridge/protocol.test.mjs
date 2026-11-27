@@ -15,19 +15,19 @@ const tm = {
   taxa_carga_descarga_bateria_2: -320,
 };
 const planes = [
-  { icao: 0xe48c01, latitude: -34.6, longitude: -58.4, altitude_ft: 3500, velocity_kt: 180, track_deg: 90, last_pos_met_ms: 12000 },
-  { icao: 0xe48c02, latitude: NaN, longitude: NaN, altitude_ft: 9000, velocity_kt: NaN, track_deg: NaN, last_pos_met_ms: 0 },
+  { icao: 0xe48c01, latitude: -34.6, longitude: -58.4, altitude_ft: 3500, velocity_kt: 180, track_deg: 90, last_pos_met_ms: 12000, callsign: 'TAM3054 ' },
+  { icao: 0xe48c02, latitude: NaN, longitude: NaN, altitude_ft: 9000, velocity_kt: NaN, track_deg: NaN, last_pos_met_ms: 0, callsign: '' },
 ];
 const tcs = { probes_c: [-1.25, 3.5, null, 4], duty_pct: [80, 0], situation: [0, 1], age_s: 0.8, tcs_time_s: 1234.5, mission: true, planes: 2 };
 const cat = (...a) => Buffer.concat(a.map((x) => Buffer.from(x)));
 const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-4, `${a} != ${b}`);
 
-test('tamanhos iguais aos do OBC (Telemetry_t 85, PlaneDown_t 28, TcsStatus_t 32)', () => {
+test('tamanhos iguais aos do OBC (Telemetry_t 85, PlaneDown_t 36, TcsStatus_t 32)', () => {
   assert.equal(TELEMETRY_SIZE, 85);
-  assert.equal(PLANE_SIZE, 28);
+  assert.equal(PLANE_SIZE, 36);
   assert.equal(THERMAL_SIZE, 32);
   assert.equal(encodeTelemetry(tm).length, 86);
-  assert.equal(encodePayload(planes).length, 2 + 2 * 28);
+  assert.equal(encodePayload(planes).length, 2 + 2 * 36);
   assert.equal(encodeThermal(tcs).length, 33);
   assert.equal(encodeAzimuth(270.5).length, 6);
 });
@@ -55,6 +55,8 @@ test('round-trip T, P, H, Z e A', () => {
   close(p[0].altitude_ft, 3500);
   assert.equal(p[0].last_pos_met_ms, 12000);
   assert.ok(Number.isNaN(p[1].latitude));
+  assert.equal(p[0].callsign, 'TAM3054'); // espaços das pontas saem
+  assert.equal(p[1].callsign, '');
   const h = evs[2].data;
   assert.ok(h.crc_ok && h.valid && h.mission);
   assert.deepEqual(h.probes_c, [-1.25, 3.5, null, 4]);
